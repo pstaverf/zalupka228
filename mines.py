@@ -54,7 +54,7 @@ except ImportError:
         except Exception:
             pass
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8943696232:AAG3rX23_WNM6OSfKLLkgDxK2yo8-HZ1O4k").strip()
 if not BOT_TOKEN:
     raise RuntimeError(
         "TELEGRAM_BOT_TOKEN is missing. Set it in the hosting panel's environment variables "
