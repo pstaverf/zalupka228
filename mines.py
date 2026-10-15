@@ -82,6 +82,13 @@ SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH") or os.getenv("DB_PATH") or os.path.
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+
+def _inline_filter(predicate):
+    async def evaluate(event):
+        return predicate(event)
+    return evaluate
+
+
 TASKS_INFO = [
     {
         "id": "mines2gm",
@@ -453,6 +460,9 @@ SQLITE_INDEXES = (
     'CREATE INDEX IF NOT EXISTS idx_promo_activations_user ON promo_activations(user_id)',
     'CREATE INDEX IF NOT EXISTS idx_temple_gifts_sender ON temple_gifts_history(sender_id)',
     'CREATE INDEX IF NOT EXISTS idx_temple_gifts_receiver ON temple_gifts_history(receiver_id)',
+    'CREATE INDEX IF NOT EXISTS idx_p2p_sell_offers ON p2p_accounts(sell_price) WHERE sell_order_active = 1 AND sell_price > 0 AND mp_balance > 0',
+    'CREATE INDEX IF NOT EXISTS idx_p2p_buy_offers ON p2p_accounts(buy_price DESC) WHERE buy_order_active = 1 AND buy_price > 0 AND mcoin_balance >= buy_price',
+    'CREATE INDEX IF NOT EXISTS idx_savings_positive ON savings_accounts(user_id) WHERE balance > 0',
 )
 
 
@@ -713,7 +723,51 @@ def _cache_put(cache, key, value):
     if len(cache) > CACHE_LIMIT:
         cache.popitem(last=False)
 
-_known_chat_members = set()
+_READ_CONTEXT = ContextVar("update_read_cache", default=None)
+
+
+def _clear_event_reads(scope):
+    scope[1].clear()
+    scope[3] = False
+
+
+def _event_read_cache(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        scope = _READ_CONTEXT.get()
+        if scope is None or scope[0] is not asyncio.current_task() or conn.in_transaction:
+            return function(*args, **kwargs)
+        revision = conn.total_changes
+        if scope[2] != revision:
+            scope[1].clear()
+            scope[2] = revision
+        key = (function, args, tuple(sorted(kwargs.items())), bool(DEMO_GAME_CONTEXT.get()))
+        if key in scope[1]:
+            value = scope[1][key]
+            return value.copy() if isinstance(value, dict) else value
+        value = function(*args, **kwargs)
+        if not conn.in_transaction and conn.total_changes == revision:
+            scope[1][key] = value.copy() if isinstance(value, dict) else value
+            if not scope[3]:
+                scope[3] = True
+                asyncio.get_running_loop().call_soon(_clear_event_reads, scope)
+        return value
+    return wrapped
+
+
+@dp.update.outer_middleware()
+async def _cache_reads_middleware(handler, event, data):
+    scope = [asyncio.current_task(), {}, conn.total_changes, False]
+    token = _READ_CONTEXT.set(scope)
+    try:
+        return await handler(event, data)
+    finally:
+        scope[0] = None
+        scope[1].clear()
+        _READ_CONTEXT.reset(token)
+
+
+_known_chat_members = OrderedDict()
 _banned_users_cache = {}
 _top_banned_users = set()
 _transfer_banned_users = set()
@@ -1166,6 +1220,7 @@ def initialize_demo_balance(user_id):
     return True
 
 
+@_event_read_cache
 def is_demo_user(user_id):
     try:
         cursor.execute("SELECT enabled FROM demo_modes WHERE user_id = ?", (user_id,))
@@ -1229,6 +1284,7 @@ _ADMIN_PERMISSION_COLUMNS = {
 }
 
 
+@_event_read_cache
 def get_admin_control(admin_id):
     defaults = {
         "admin_id": admin_id,
@@ -1251,19 +1307,20 @@ def get_admin_control(admin_id):
         "updated_at": None,
     }
     try:
-        cursor.execute('''
-            INSERT INTO admin_controls (admin_id) VALUES (?)
-            ON CONFLICT (admin_id) DO NOTHING
-        ''', (admin_id,))
-        conn.commit()
-        cursor.execute('''
+        query = """
             SELECT admin_id, transfer_limit, issue_limit, mp_transfer_limit, mp_issue_limit,
                    transfer_used, issue_used, mp_transfer_used, mp_issue_used,
                    usage_date, can_ban, can_transfer, can_issue, can_set, can_mp_transfer, can_mp_issue,
                    updated_by, updated_at
             FROM admin_controls WHERE admin_id = ?
-        ''', (admin_id,))
+        """
+        cursor.execute(query, (admin_id,))
         row = cursor.fetchone()
+        if row is None:
+            cursor.execute("INSERT INTO admin_controls (admin_id) VALUES (?) ON CONFLICT (admin_id) DO NOTHING", (admin_id,))
+            conn.commit()
+            cursor.execute(query, (admin_id,))
+            row = cursor.fetchone()
         if row:
             keys = list(defaults.keys())
             return {key: (row[index] if row[index] is not None else defaults[key]) for index, key in enumerate(keys)}
@@ -1366,6 +1423,7 @@ def set_admin_permission(admin_id, permission, enabled, changed_by):
         return False
 
 
+@_event_read_cache
 def get_user(user_id):
     try:
         cursor.execute('SELECT balance, games, lost, bonus_time, username, registered_at, mp_balance, mp_daily_transferred, mp_daily_date, ref_earned, ref_count, referred_by, max_balance, first_name FROM users WHERE user_id = ?', (user_id,))
@@ -1560,6 +1618,7 @@ def get_user_transfers_count(user_id):
         return 0
 
 
+@_event_read_cache
 def get_last_game(user_id):
     try:
         cursor.execute('''
@@ -1711,6 +1770,7 @@ def add_game_history(user_id, game_type, bet, result, win_amount=0, created_at_s
         pass
 
 
+@_event_read_cache
 def get_user_stats(user_id):
     try:
         cursor.execute('SELECT mines, tower, COALESCE(qwak, 0), diamonds, crash, slots, bowling, COALESCE(dice, 0), COALESCE(coin, 0), COALESCE(chest, 0), COALESCE(fishing, 0), COALESCE(scratch, 0), COALESCE(roulette, 0), darts, basketball, football, COALESCE(twentyone, 0), COALESCE(gold, 0) FROM game_stats WHERE user_id = ?', (user_id,))
@@ -1783,6 +1843,7 @@ TIME_DEPOSIT_RATES = {
 BANK_MAX_LIMIT = 100000000
 
 
+@_event_read_cache
 def get_bank_settings(user_id):
     try:
         cursor.execute("SELECT notifications_enabled FROM bank_settings WHERE user_id = ?", (user_id,))
@@ -1807,6 +1868,7 @@ def toggle_bank_notifications(user_id):
         return True
 
 
+@_event_read_cache
 def get_user_bank_total(user_id):
     try:
         cursor.execute("SELECT SUM(amount) FROM time_deposits WHERE user_id = ? AND status = 'active'", (user_id,))
@@ -1958,6 +2020,7 @@ def withdraw_all_time_deposits(user_id):
         return False, str(e)
 
 
+@_event_read_cache
 def get_savings_account(user_id):
     try:
         cursor.execute("SELECT balance, accumulated_interest, total_earned, last_accrual FROM savings_accounts WHERE user_id = ?", (user_id,))
@@ -2260,11 +2323,12 @@ async def save_username_cb_middleware(handler, event, data):
 def add_chat_member(user_id, chat_id):
     key = (user_id, chat_id)
     if key in _known_chat_members:
+        _known_chat_members.move_to_end(key)
         return True
-    _known_chat_members.add(key)
     try:
         cursor.execute('INSERT INTO chat_members (user_id, chat_id) VALUES (?, ?) ON CONFLICT (user_id, chat_id) DO NOTHING', (user_id, chat_id))
         conn.commit()
+        _cache_put(_known_chat_members, key, True)
         return True
     except Exception:
         return False
@@ -2459,89 +2523,101 @@ def generate_diamonds_mines(count):
     return diamonds_tower
 
 
-def get_tower_multiplier(mine_count, level):
-    multipliers = {
-        1: {
-            0: 1.00, 1: 1.21, 2: 1.52, 3: 1.89, 4: 2.37, 5: 2.96, 6: 3.70, 7: 4.63, 8: 5.78, 9: 7.23
-        },
-        2: {
-            0: 1.00, 1: 1.62, 2: 2.69, 3: 4.49, 4: 7.48, 5: 12.47, 6: 20.79, 7: 34.65, 8: 57.75, 9: 96.25
-        },
-        3: {
-            0: 1.00, 1: 2.42, 2: 6.06, 3: 15.16, 4: 37.89, 5: 94.73, 6: 238.62, 7: 592.04, 8: 1480.10, 9: 3700.25
-        },
-        4: {
-            0: 1.00, 1: 4.85, 2: 24.25, 3: 121.25, 4: 606.25, 5: 3031.25, 6: 15156.25, 7: 75781.25, 8: 378906.25, 9: 1894531.25
-        }
+_TOWER_MULTIPLIERS = {
+    1: {
+        0: 1.00, 1: 1.21, 2: 1.52, 3: 1.89, 4: 2.37, 5: 2.96, 6: 3.70, 7: 4.63, 8: 5.78, 9: 7.23
+    },
+    2: {
+        0: 1.00, 1: 1.62, 2: 2.69, 3: 4.49, 4: 7.48, 5: 12.47, 6: 20.79, 7: 34.65, 8: 57.75, 9: 96.25
+    },
+    3: {
+        0: 1.00, 1: 2.42, 2: 6.06, 3: 15.16, 4: 37.89, 5: 94.73, 6: 238.62, 7: 592.04, 8: 1480.10, 9: 3700.25
+    },
+    4: {
+        0: 1.00, 1: 4.85, 2: 24.25, 3: 121.25, 4: 606.25, 5: 3031.25, 6: 15156.25, 7: 75781.25, 8: 378906.25, 9: 1894531.25
     }
+}
+
+
+def get_tower_multiplier(mine_count, level):
+    multipliers = _TOWER_MULTIPLIERS
     return multipliers.get(mine_count, {}).get(level, 1.00)
+
+
+_QWAK_MULTIPLIERS = {
+    0: 1.00,
+    1: 1.00,
+    2: 1.21,
+    3: 2.00,
+    4: 5.05,
+    5: 25.25,
+}
 
 
 def get_qwak_multiplier(level):
-    multipliers = {
-        0: 1.00,
-        1: 1.00,
-        2: 1.21,
-        3: 2.00,
-        4: 5.05,
-        5: 25.25,
-    }
+    multipliers = _QWAK_MULTIPLIERS
     return multipliers.get(level, 1.00)
 
 
-def get_diamonds_multiplier(mine_count, level):
-    multipliers = {
-        1: {
-            0: 1.00, 1: 1.46, 2: 2.18, 3: 3.27, 4: 4.91, 5: 7.37, 6: 11.05,
-            7: 16.57, 8: 24.86, 9: 37.29, 10: 55.94, 11: 83.90, 12: 125.86,
-            13: 188.79, 14: 283.18, 15: 424.77, 16: 637.16
-        },
-        2: {
-            0: 1.00, 1: 2.91, 2: 8.73, 3: 26.19, 4: 78.57, 5: 235.71, 6: 707.13,
-            7: 2121.39, 8: 6364.17, 9: 19092.51, 10: 57277.53, 11: 171832.59,
-            12: 515497.77, 13: 1546493.31, 14: 4639479.93, 15: 13918439.79, 16: 41755319.37
-        }
+_DIAMONDS_MULTIPLIERS = {
+    1: {
+        0: 1.00, 1: 1.46, 2: 2.18, 3: 3.27, 4: 4.91, 5: 7.37, 6: 11.05,
+        7: 16.57, 8: 24.86, 9: 37.29, 10: 55.94, 11: 83.90, 12: 125.86,
+        13: 188.79, 14: 283.18, 15: 424.77, 16: 637.16
+    },
+    2: {
+        0: 1.00, 1: 2.91, 2: 8.73, 3: 26.19, 4: 78.57, 5: 235.71, 6: 707.13,
+        7: 2121.39, 8: 6364.17, 9: 19092.51, 10: 57277.53, 11: 171832.59,
+        12: 515497.77, 13: 1546493.31, 14: 4639479.93, 15: 13918439.79, 16: 41755319.37
     }
+}
+
+
+def get_diamonds_multiplier(mine_count, level):
+    multipliers = _DIAMONDS_MULTIPLIERS
     return multipliers.get(mine_count, {}).get(level, 1.00)
 
 
-def get_multiplier(mine_count, level):
-    multipliers = {
-        1: {
-            0: 1.00, 1: 1.01, 2: 1.05, 3: 1.10, 4: 1.15, 5: 1.21, 6: 1.28, 7: 1.35,
-            8: 1.43, 9: 1.52, 10: 1.62, 11: 1.73, 12: 1.87, 13: 2.02, 14: 2.20,
-            15: 2.41, 16: 2.66, 17: 2.96, 18: 3.32, 19: 3.76, 20: 4.31, 21: 5.00,
-            22: 5.88, 23: 7.04, 24: 8.59
-        },
-        2: {
-            0: 1.00, 1: 1.05, 2: 1.15, 3: 1.26, 4: 1.39, 5: 1.53, 6: 1.70, 7: 1.90,
-            8: 2.14, 9: 2.42, 10: 2.77, 11: 3.20, 12: 3.73, 13: 4.41, 14: 5.29,
-            15: 6.47, 16: 8.09, 17: 10.37, 18: 13.68, 19: 18.72, 20: 26.74,
-            21: 40.43, 22: 65.96, 23: 120.19
-        },
-        3: {
-            0: 1.00, 1: 1.10, 2: 1.26, 3: 1.45, 4: 1.68, 5: 1.96, 6: 2.30, 7: 2.73,
-            8: 3.28, 9: 3.98, 10: 4.90, 11: 6.13, 12: 7.80, 13: 10.14, 14: 13.51,
-            15: 18.54, 16: 26.34, 17: 38.94, 18: 60.32, 19: 98.76, 20: 172.97,
-            21: 330.78, 22: 714.30
-        },
-        4: {
-            0: 1.00, 1: 1.15, 2: 1.39, 3: 1.68, 4: 2.05, 5: 2.53, 6: 3.17, 7: 4.01,
-            8: 5.16, 9: 6.74, 10: 8.96, 11: 12.16, 12: 16.91, 13: 24.18, 14: 35.75,
-            15: 55.06, 16: 88.93, 17: 151.98, 18: 278.30, 19: 552.47, 20: 1209.71,
-            21: 3029.88
-        },
-        5: {
-            0: 1.00, 1: 1.21, 2: 1.53, 3: 1.96, 4: 2.53, 5: 3.32, 6: 4.43, 7: 6.01,
-            8: 8.33, 9: 11.80, 10: 17.16, 11: 25.75, 12: 40.13, 13: 65.21, 14: 111.78,
-            15: 204.94, 16: 409.88, 17: 922.22, 18: 2459.26, 19: 8607.41, 20: 51644.48
-        },
-        6: {
-            0: 1.00, 1: 1.28, 2: 1.70, 3: 2.30, 4: 3.17, 5: 4.43, 6: 6.33, 7: 9.25,
-            8: 13.88, 9: 21.35, 10: 33.93, 11: 56.03, 12: 96.94, 13: 177.72, 14: 350.51,
-            15: 764.74, 16: 1891.07, 17: 5673.22, 18: 22692.89, 19: 170196.67
-        }
+_MINES_MULTIPLIERS = {
+    1: {
+        0: 1.00, 1: 1.01, 2: 1.05, 3: 1.10, 4: 1.15, 5: 1.21, 6: 1.28, 7: 1.35,
+        8: 1.43, 9: 1.52, 10: 1.62, 11: 1.73, 12: 1.87, 13: 2.02, 14: 2.20,
+        15: 2.41, 16: 2.66, 17: 2.96, 18: 3.32, 19: 3.76, 20: 4.31, 21: 5.00,
+        22: 5.88, 23: 7.04, 24: 8.59
+    },
+    2: {
+        0: 1.00, 1: 1.05, 2: 1.15, 3: 1.26, 4: 1.39, 5: 1.53, 6: 1.70, 7: 1.90,
+        8: 2.14, 9: 2.42, 10: 2.77, 11: 3.20, 12: 3.73, 13: 4.41, 14: 5.29,
+        15: 6.47, 16: 8.09, 17: 10.37, 18: 13.68, 19: 18.72, 20: 26.74,
+        21: 40.43, 22: 65.96, 23: 120.19
+    },
+    3: {
+        0: 1.00, 1: 1.10, 2: 1.26, 3: 1.45, 4: 1.68, 5: 1.96, 6: 2.30, 7: 2.73,
+        8: 3.28, 9: 3.98, 10: 4.90, 11: 6.13, 12: 7.80, 13: 10.14, 14: 13.51,
+        15: 18.54, 16: 26.34, 17: 38.94, 18: 60.32, 19: 98.76, 20: 172.97,
+        21: 330.78, 22: 714.30
+    },
+    4: {
+        0: 1.00, 1: 1.15, 2: 1.39, 3: 1.68, 4: 2.05, 5: 2.53, 6: 3.17, 7: 4.01,
+        8: 5.16, 9: 6.74, 10: 8.96, 11: 12.16, 12: 16.91, 13: 24.18, 14: 35.75,
+        15: 55.06, 16: 88.93, 17: 151.98, 18: 278.30, 19: 552.47, 20: 1209.71,
+        21: 3029.88
+    },
+    5: {
+        0: 1.00, 1: 1.21, 2: 1.53, 3: 1.96, 4: 2.53, 5: 3.32, 6: 4.43, 7: 6.01,
+        8: 8.33, 9: 11.80, 10: 17.16, 11: 25.75, 12: 40.13, 13: 65.21, 14: 111.78,
+        15: 204.94, 16: 409.88, 17: 922.22, 18: 2459.26, 19: 8607.41, 20: 51644.48
+    },
+    6: {
+        0: 1.00, 1: 1.28, 2: 1.70, 3: 2.30, 4: 3.17, 5: 4.43, 6: 6.33, 7: 9.25,
+        8: 13.88, 9: 21.35, 10: 33.93, 11: 56.03, 12: 96.94, 13: 177.72, 14: 350.51,
+        15: 764.74, 16: 1891.07, 17: 5673.22, 18: 22692.89, 19: 170196.67
     }
+}
+
+
+def get_multiplier(mine_count, level):
+    multipliers = _MINES_MULTIPLIERS
     if mine_count in multipliers and level in multipliers[mine_count]:
         return multipliers[mine_count][level]
 
@@ -2577,6 +2653,30 @@ GOLD_BOOM_EMOJI = '<tg-emoji emoji-id="5276032951342088188">💥</tg-emoji>'
 
 def get_chat_key(user_id, chat_id):
     return f"{user_id}_{chat_id}"
+
+
+def _remember_message(bucket, key, message_id):
+    messages = bucket.setdefault(key, [])
+    if message_id not in messages:
+        messages.append(message_id)
+
+
+async def _delete_messages(chat_id, message_ids, telegram_bot=None):
+    telegram_bot = telegram_bot or bot
+    unique_ids = list(dict.fromkeys(message_ids))
+    for offset in range(0, len(unique_ids), 100):
+        batch = unique_ids[offset:offset + 100]
+        if len(batch) > 1:
+            try:
+                await telegram_bot.delete_messages(chat_id=chat_id, message_ids=batch)
+                continue
+            except Exception:
+                pass
+        for message_id in batch:
+            try:
+                await telegram_bot.delete_message(chat_id=chat_id, message_id=message_id)
+            except Exception:
+                pass
 
 
 user_messages = {}
@@ -2997,7 +3097,7 @@ async def show_catalog(message_or_callback, user_id, user_name, chat_id, is_grou
     if key not in user_messages:
         user_messages[key] = []
     if msg:
-        user_messages[key].append(msg.message_id)
+        _remember_message(user_messages, key, msg.message_id)
 
 
 async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
@@ -3062,7 +3162,7 @@ async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_n
     if key not in user_messages:
         user_messages[key] = []
     if msg:
-        user_messages[key].append(msg.message_id)
+        _remember_message(user_messages, key, msg.message_id)
 
 
 async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
@@ -3155,7 +3255,7 @@ async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_
     if key not in user_messages:
         user_messages[key] = []
     if msg:
-        user_messages[key].append(msg.message_id)
+        _remember_message(user_messages, key, msg.message_id)
 
 
 async def _get_top_identity(user_id, settings):
@@ -3352,12 +3452,12 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
 
 
 @dp.message(Command("history", "история"))
-@dp.message(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"]))
 async def cmd_history(message: types.Message):
     await show_recent_games_menu(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), page=1)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("recent_page_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("recent_page_")))
 async def process_recent_page(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -3367,13 +3467,13 @@ async def process_recent_page(callback: types.CallbackQuery):
     await show_recent_games_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=page)
 
 
-@dp.callback_query(lambda c: c.data == "back_to_history_menu")
+@dp.callback_query(_inline_filter(lambda c: c.data == "back_to_history_menu"))
 async def process_back_to_history_menu(callback: types.CallbackQuery):
     await callback.answer()
     await show_recent_games_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=1)
 
 
-@dp.callback_query(lambda c: c.data == "history_stats")
+@dp.callback_query(_inline_filter(lambda c: c.data == "history_stats"))
 async def process_history_stats(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -3438,7 +3538,7 @@ async def process_history_stats(callback: types.CallbackQuery):
         )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("history_games_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("history_games_")))
 async def process_history_games(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -3546,7 +3646,7 @@ async def process_history_games(callback: types.CallbackQuery):
         )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("resume_game_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("resume_game_")))
 async def process_resume_game(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -3719,7 +3819,7 @@ async def activate_mcoin_check(message, code):
 
 
 @dp.message(Command("check", "checks", "чек", "чеки"))
-@dp.message(lambda message: message.text and re.match(r"^(?:чек|чеки|check|checks)(?:\s|$)", message.text.strip(), re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r"^(?:чек|чеки|check|checks)(?:\s|$)", message.text.strip(), re.IGNORECASE)))
 async def cmd_checks(message: types.Message):
     if message.chat.type != "private":
         await message.answer("<i>Раздел чеков работает только в личных сообщениях!</i>", parse_mode=ParseMode.HTML)
@@ -3778,13 +3878,13 @@ async def cmd_checks(message: types.Message):
         await message.answer(f"<i>Не удалось создать чек: {html.escape(str(exc))}</i>", parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "checks_menu")
+@dp.callback_query(_inline_filter(lambda c: c.data == "checks_menu"))
 async def process_checks_menu(callback: types.CallbackQuery):
     await callback.answer()
     await show_checks_menu(callback, callback.from_user.id, edit=True)
 
 
-@dp.callback_query(lambda c: c.data == "checks_buy")
+@dp.callback_query(_inline_filter(lambda c: c.data == "checks_buy"))
 async def process_checks_buy(callback: types.CallbackQuery):
     if callback.message.chat.type != "private":
         await callback.answer("Раздел чеков работает только в личке.", show_alert=True)
@@ -3814,7 +3914,7 @@ async def process_checks_buy(callback: types.CallbackQuery):
         await callback.answer("Ошибка при покупке доступа.", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data == "checks_create_help")
+@dp.callback_query(_inline_filter(lambda c: c.data == "checks_create_help"))
 async def process_checks_create_help(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
@@ -3830,7 +3930,7 @@ async def process_checks_create_help(callback: types.CallbackQuery):
     )
 
 
-@dp.callback_query(lambda c: c.data == "checks_mine")
+@dp.callback_query(_inline_filter(lambda c: c.data == "checks_mine"))
 async def process_checks_mine(callback: types.CallbackQuery):
     await callback.answer()
     if callback.message.chat.type != "private":
@@ -3857,7 +3957,7 @@ async def process_checks_mine(callback: types.CallbackQuery):
     )
 
 
-@dp.callback_query(lambda c: c.data == "checks_back")
+@dp.callback_query(_inline_filter(lambda c: c.data == "checks_back"))
 async def process_checks_back(callback: types.CallbackQuery):
     await callback.answer()
     if callback.message.chat.type != "private":
@@ -3960,7 +4060,7 @@ async def cmd_start(message: types.Message):
     key = get_chat_key(message.from_user.id, message.chat.id)
     if key not in user_messages:
         user_messages[key] = []
-    user_messages[key].append(msg.message_id)
+    _remember_message(user_messages, key, msg.message_id)
 
 
 @dp.message(Command("add"))
@@ -4311,7 +4411,7 @@ async def cmd_sn(message: types.Message):
 
 
 @dp.message(Command("unbd", "унбд"))
-@dp.message(lambda message: message.text and message.text.strip().lower().split()[0] in ["/unbd", "unbd", "унбд", "/унбд"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ["/unbd", "unbd", "унбд", "/унбд"]))
 async def cmd_unbd(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
@@ -4371,6 +4471,9 @@ async def cmd_unbd(message: types.Message):
         cursor.execute("DELETE FROM active_games_state WHERE owner_id = ?", (target_user_id,))
         conn.commit()
 
+        for membership in tuple(_known_chat_members):
+            if membership[0] == target_user_id:
+                _known_chat_members.pop(membership, None)
         _known_usernames.pop(target_user_id, None)
         _known_names.pop(target_user_id, None)
         _identity_cache.pop(target_user_id, None)
@@ -4614,6 +4717,22 @@ async def cmd_event(message: types.Message):
     event_timer_task = asyncio.create_task(event_timer(message.chat.id, msg.message_id))
 
 
+async def _event_participant_links():
+    links = []
+    for uid in tuple(event_participants):
+        name = get_user_display_name(uid)
+        if name == f"ID:{uid}":
+            try:
+                user = await bot.get_chat(uid)
+                name = get_user_display_name(uid, user.first_name) or "User"
+                if user.first_name:
+                    _cache_put(_known_names, uid, user.first_name)
+            except Exception:
+                name = "User"
+        links.append(f'<a href="tg://user?id={uid}">{html.escape(name)}</a>')
+    return links
+
+
 async def event_timer(chat_id, message_id):
     global event_active, event_started, event_participants, event_timeout_task
 
@@ -4635,13 +4754,7 @@ async def event_timer(chat_id, message_id):
             event_started = True
 
             participants_list = []
-            for uid in event_participants.keys():
-                try:
-                    user = await bot.get_chat(uid)
-                    clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
-                    participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
-                except Exception:
-                    participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
+            participants_list = await _event_participant_links()
 
             text = (
                 f'<tg-emoji emoji-id="5852868430952144622">🔥</tg-emoji> Конкурс начался!\n\n'
@@ -4718,13 +4831,7 @@ async def event_timeout(chat_id, message_id):
     await bot.unpin_chat_message(chat_id=chat_id, message_id=message_id)
 
     participants_list = []
-    for uid in event_participants.keys():
-        try:
-            user = await bot.get_chat(uid)
-            clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
-            participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
-        except Exception:
-            participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
+    participants_list = await _event_participant_links()
 
     text = (
         f'⏰ <b>Время вышло!</b>\n\n'
@@ -4741,7 +4848,7 @@ async def event_timeout(chat_id, message_id):
     )
 
 
-@dp.callback_query(lambda c: c.data == "event_join")
+@dp.callback_query(_inline_filter(lambda c: c.data == "event_join"))
 async def process_event_join(callback: types.CallbackQuery):
     global event_active, event_started, event_participants
 
@@ -4763,13 +4870,7 @@ async def process_event_join(callback: types.CallbackQuery):
     await callback.answer("✅ Вы стали участником розыгрыша!")
 
     participants_list = []
-    for uid in event_participants.keys():
-        try:
-            user = await bot.get_chat(uid)
-            clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
-            participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
-        except Exception:
-            participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
+    participants_list = await _event_participant_links()
 
     try:
         await callback.message.edit_text(
@@ -4795,7 +4896,7 @@ async def process_event_join(callback: types.CallbackQuery):
         pass
 
 
-@dp.message(lambda message: message.text and message.text.startswith("/i "))
+@dp.message(_inline_filter(lambda message: message.text and message.text.startswith("/i ")))
 async def cmd_i(message: types.Message):
     global event_active, event_started, event_number, event_prize, event_participants, event_min_num, event_max_num
 
@@ -4875,13 +4976,13 @@ async def cmd_i(message: types.Message):
 
 
 @dp.message(Command("top"))
-@dp.message(lambda message: message.text and message.text.lower() in ["топ", "топ игроков", "мировой топ"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ", "топ игроков", "мировой топ"]))
 async def cmd_top(message: types.Message):
     await show_top(message)
 
 
 @dp.message(Command("top_chat", "topchat"))
-@dp.message(lambda message: message.text and message.text.lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы"]))
 async def cmd_top_chat(message: types.Message):
     if message.chat.type not in ["group", "supergroup"]:
         await message.answer("<i>Эта команда работает только в беседах!</i>", parse_mode=ParseMode.HTML)
@@ -4958,15 +5059,15 @@ async def show_records(message: types.Message):
 
 
 @dp.message(Command("records", "record", "рекорды", "рекорд"))
-@dp.message(lambda message: message.text and message.text.lower().strip() in [
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower().strip() in [
     "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top"
-])
+]))
 async def cmd_records(message: types.Message):
     await show_records(message)
 
 
 @dp.message(Command("game", "games"))
-@dp.message(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"]))
 async def cmd_game(message: types.Message):
     is_group = message.chat.type in ["group", "supergroup"]
     await show_catalog(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), message.chat.id, is_group)
@@ -4974,7 +5075,7 @@ async def cmd_game(message: types.Message):
 
 
 @dp.message(Command("mines"))
-@dp.message(lambda message: message.text and re.match(r'^(мины|mines)\s*', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(мины|mines)\s*', message.text, re.IGNORECASE)))
 async def cmd_mines(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5037,7 +5138,7 @@ async def cmd_mines(message: types.Message):
 
 
 @dp.message(Command("tower"))
-@dp.message(lambda message: message.text and re.match(r'^(башня|tower)\s*', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(башня|tower)\s*', message.text, re.IGNORECASE)))
 async def cmd_tower(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5100,7 +5201,7 @@ async def cmd_tower(message: types.Message):
 
 
 @dp.message(Command("qwak", "квак", "frog"))
-@dp.message(lambda message: message.text and re.match(r'^(квак|qwak|frog|лягушка)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(квак|qwak|frog|лягушка)\b', message.text, re.IGNORECASE)))
 async def cmd_qwak(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5153,7 +5254,7 @@ async def cmd_qwak(message: types.Message):
 
 
 @dp.message(Command("diamond", "diamonds"))
-@dp.message(lambda message: message.text and re.match(r'^(алмазы|алмаз|diamond|diamonds)\s*', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(алмазы|алмаз|diamond|diamonds)\s*', message.text, re.IGNORECASE)))
 async def cmd_diamonds(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5274,7 +5375,7 @@ async def show_gold_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.message(Command("gold", "золото", "голд"))
-@dp.message(lambda message: message.text and re.match(r'^(золото|gold|голд)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(золото|gold|голд)\b', message.text, re.IGNORECASE)))
 async def cmd_gold(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5323,7 +5424,7 @@ async def cmd_gold(message: types.Message):
 
 
 @dp.message(Command("21", "очко", "ochko", "twentyone"))
-@dp.message(lambda message: message.text and re.match(r'^(21|очко|ochko)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(21|очко|ochko)\b', message.text, re.IGNORECASE)))
 async def cmd_twentyone(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5448,7 +5549,7 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
 
 
 @dp.message(Command("crash", "краш"))
-@dp.message(lambda message: message.text and re.match(r'^(краш|crash|кр)\s*', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(краш|crash|кр)\s*', message.text, re.IGNORECASE)))
 async def cmd_crash(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -5559,7 +5660,7 @@ async def process_slots_outcome(message: types.Message, dice_msg: types.Message,
 
 
 @dp.message(Command("slots", "slot"))
-@dp.message(lambda message: message.text and re.match(r'^(слоты|слот|slots|slot)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(слоты|слот|slots|slot)\b', message.text, re.IGNORECASE)))
 async def cmd_slots(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -5719,7 +5820,7 @@ async def process_bowling_outcome(message: types.Message, dice_msg: types.Messag
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("bwl_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("bwl_")))
 async def process_bowling_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -5771,7 +5872,7 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("bowling", "боулинг", "бо"))
-@dp.message(lambda message: message.text and re.match(r'^(боулинг|bowling|бо)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(боулинг|bowling|бо)\b', message.text, re.IGNORECASE)))
 async def cmd_bowling(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6017,7 +6118,7 @@ async def process_dice_outcome(message: types.Message, dice_msg: types.Message, 
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dice_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dice_")))
 async def process_dice_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -6046,7 +6147,7 @@ async def process_dice_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("dice", "кубик", "куб"))
-@dp.message(lambda message: message.text and re.match(r'^(кубик|dice|куб)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(кубик|dice|куб)\b', message.text, re.IGNORECASE)))
 async def cmd_dice(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6223,7 +6324,7 @@ async def process_coin_outcome(message: types.Message, user_id: int, bet: int, c
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("coinbet_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("coinbet_")))
 async def process_coin_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -6250,7 +6351,7 @@ async def process_coin_choice_callback(callback: types.CallbackQuery):
     await start_coin_game(callback.message, callback.from_user.id, bet, choice_code, choice_name, COIN_MULTIPLIER, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
 
-@dp.callback_query(lambda c: c.data == "coin_cancel")
+@dp.callback_query(_inline_filter(lambda c: c.data == "coin_cancel"))
 async def process_coin_cancel(callback: types.CallbackQuery):
     try:
         await callback.message.delete()
@@ -6260,7 +6361,7 @@ async def process_coin_cancel(callback: types.CallbackQuery):
 
 
 @dp.message(Command("coin", "монета", "монетка"))
-@dp.message(lambda message: message.text and re.match(r'^(монета|монетка|coin)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(монета|монетка|coin)\b', message.text, re.IGNORECASE)))
 async def cmd_coin(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6407,7 +6508,7 @@ async def process_fishing_outcome(message: types.Message, user_id: int, bet: int
 
 
 @dp.message(Command("fishing", "fish", "рыбалка", "рыба"))
-@dp.message(lambda message: message.text and re.match(r'^(рыбалка|рыба|fishing|fish)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(рыбалка|рыба|fishing|fish)\b', message.text, re.IGNORECASE)))
 async def cmd_fishing(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6503,7 +6604,7 @@ async def show_chest_menu(message: types.Message, user_id: int, bet: int, user_f
     )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("chest_cancel:"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("chest_cancel:")))
 async def process_chest_cancel(callback: types.CallbackQuery):
     try:
         owner_id = int(callback.data.split(":", 1)[1])
@@ -6519,7 +6620,7 @@ async def process_chest_cancel(callback: types.CallbackQuery):
     await callback.answer("Игра отменена")
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("chest_pick:"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("chest_pick:")))
 async def process_chest_pick(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     if len(parts) < 4:
@@ -6591,7 +6692,7 @@ async def process_chest_pick(callback: types.CallbackQuery):
 
 
 @dp.message(Command("chest", "сундук", "сунд"))
-@dp.message(lambda message: message.text and re.match(r'^(сундук|chest|сунд)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(сундук|chest|сунд)\b', message.text, re.IGNORECASE)))
 async def cmd_chest(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6766,11 +6867,7 @@ def settle_scratch_game(game_id: int, user_id: int):
 async def start_scratch_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     user_data = get_user(user_id)
@@ -6830,7 +6927,7 @@ async def show_scratch_grid_from_message(message, user_id, game_id, settled=Fals
     key = get_chat_key(user_id, game.get("chat_id"))
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 async def show_scratch_grid_from_callback(callback, user_id, game_id, settled=False):
@@ -6854,10 +6951,10 @@ async def show_scratch_grid_from_callback(callback, user_id, game_id, settled=Fa
     key = get_chat_key(user_id, game.get("chat_id"))
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("scratch_cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_cell_")))
 async def process_scratch_cell(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     if len(parts) < 3:
@@ -6904,7 +7001,7 @@ async def process_scratch_cell(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("scratch_openall_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_openall_")))
 async def process_scratch_openall(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -6938,7 +7035,7 @@ async def process_scratch_openall(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("scratch_cancel_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_cancel_")))
 async def process_scratch_cancel(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -6970,7 +7067,7 @@ async def process_scratch_cancel(callback: types.CallbackQuery):
 
 
 @dp.message(Command("scratch", "скретч", "скретчка"))
-@dp.message(lambda message: message.text and re.match(r'^(скретч|scratch|скретчка)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(скретч|scratch|скретчка)\b', message.text, re.IGNORECASE)))
 async def cmd_scratch(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -7404,7 +7501,7 @@ async def process_roulette_outcome(message: types.Message, user_id: int, bet: in
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("roul_menu:"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("roul_menu:")))
 async def process_roulette_menu_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -7421,7 +7518,7 @@ async def process_roulette_menu_callback(callback: types.CallbackQuery):
     await send_or_edit_roulette_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), bet, page=page, edit=True)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("roul_pick:"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("roul_pick:")))
 async def process_roulette_pick_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -7446,7 +7543,7 @@ async def process_roulette_pick_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("roulette", "рулетка", "рул"))
-@dp.message(lambda message: message.text and re.match(r'^(рулетка|roulette|рул)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(рулетка|roulette|рул)\b', message.text, re.IGNORECASE)))
 async def cmd_roulette(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -7597,7 +7694,7 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
     )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("darts_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("darts_")))
 async def process_darts_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -7646,7 +7743,7 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("darts", "дартс", "дс", "dart"))
-@dp.message(lambda message: message.text and re.match(r'^(дартс|darts|дс|dart)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(дартс|darts|дс|dart)\b', message.text, re.IGNORECASE)))
 async def cmd_darts(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -7816,7 +7913,7 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
     )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("bb_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("bb_")))
 async def process_basketball_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -7864,7 +7961,7 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("basketball", "баскетбол", "баскет", "бс", "бк"))
-@dp.message(lambda message: message.text and re.match(r'^(баскетбол|basketball|баскет|бс|бк)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(баскетбол|basketball|баскет|бс|бк)\b', message.text, re.IGNORECASE)))
 async def cmd_basketball(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -8026,7 +8123,7 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
     )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("fb_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("fb_")))
 async def process_football_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -8073,7 +8170,7 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.message(Command("football", "футбол", "фб"))
-@dp.message(lambda message: message.text and re.match(r'^(футбол|football|фб)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(футбол|football|фб)\b', message.text, re.IGNORECASE)))
 async def cmd_football(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -8146,7 +8243,7 @@ async def cmd_football(message: types.Message):
 
 
 @dp.message(Command("promo", "промо"))
-@dp.message(lambda message: message.text and re.match(r'^(промо|promo)\b', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^(промо|promo)\b', message.text, re.IGNORECASE)))
 async def cmd_promo(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -8210,7 +8307,7 @@ async def cmd_promo(message: types.Message):
 
 
 
-@dp.message(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"]))
 async def cmd_balance(message: types.Message):
     user_id = message.from_user.id
 
@@ -8243,7 +8340,7 @@ async def cmd_balance(message: types.Message):
         )
 
 
-@dp.message(lambda message: message.text and message.text.lower() == "бонус" and message.chat.type in ["group", "supergroup"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.lower() == "бонус" and message.chat.type in ["group", "supergroup"]))
 async def cmd_bonus(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
@@ -8475,7 +8572,7 @@ async def show_twentyone_info(message_or_callback, user_id, is_callback=False):
             )
 
 
-@dp.callback_query(lambda c: c.data == "info_twentyone")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_twentyone"))
 async def process_info_twentyone(callback: types.CallbackQuery):
     await callback.answer()
     await show_twentyone_info(callback, callback.from_user.id, is_callback=True)
@@ -9002,70 +9099,70 @@ async def show_fishing_info(message_or_callback, user_id, is_callback=False):
 
 
 
-@dp.callback_query(lambda c: c.data == "catalog_main")
+@dp.callback_query(_inline_filter(lambda c: c.data == "catalog_main"))
 async def process_catalog_main(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
     await show_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group, edit=True)
 
 
-@dp.callback_query(lambda c: c.data == "catalog_fast")
+@dp.callback_query(_inline_filter(lambda c: c.data == "catalog_fast"))
 async def process_catalog_fast(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
     await show_fast_games_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-@dp.callback_query(lambda c: c.data == "catalog_modes")
+@dp.callback_query(_inline_filter(lambda c: c.data == "catalog_modes"))
 async def process_catalog_modes(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
     await show_modes_games_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-@dp.callback_query(lambda c: c.data == "info_slots")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_slots"))
 async def process_info_slots(callback: types.CallbackQuery):
     await callback.answer()
     await show_slots_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_chest")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_chest"))
 async def process_info_chest(callback: types.CallbackQuery):
     await callback.answer()
     await show_chest_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_fishing")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_fishing"))
 async def process_info_fishing(callback: types.CallbackQuery):
     await callback.answer()
     await show_fishing_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_scratch")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_scratch"))
 async def process_info_scratch(callback: types.CallbackQuery):
     await callback.answer()
     await show_scratch_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_bowling")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_bowling"))
 async def process_info_bowling(callback: types.CallbackQuery):
     await callback.answer()
     await show_bowling_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_dice")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_dice"))
 async def process_info_dice(callback: types.CallbackQuery):
     await callback.answer()
     await show_dice_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_coin")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_coin"))
 async def process_info_coin(callback: types.CallbackQuery):
     await callback.answer()
     await show_coin_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_roulette")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_roulette"))
 async def process_info_roulette(callback: types.CallbackQuery):
     await callback.answer()
     await show_roulette_info(callback, callback.from_user.id, is_callback=True)
@@ -9129,7 +9226,7 @@ async def show_darts_info(message_or_callback, user_id, is_callback=False):
             )
 
 
-@dp.callback_query(lambda c: c.data == "info_darts")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_darts"))
 async def process_info_darts(callback: types.CallbackQuery):
     await callback.answer()
     await show_darts_info(callback, callback.from_user.id, is_callback=True)
@@ -9193,7 +9290,7 @@ async def show_basketball_info(message_or_callback, user_id, is_callback=False):
             )
 
 
-@dp.callback_query(lambda c: c.data == "info_basketball")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_basketball"))
 async def process_info_basketball(callback: types.CallbackQuery):
     await callback.answer()
     await show_basketball_info(callback, callback.from_user.id, is_callback=True)
@@ -9257,13 +9354,13 @@ async def show_football_info(message_or_callback, user_id, is_callback=False):
             )
 
 
-@dp.callback_query(lambda c: c.data == "info_football")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_football"))
 async def process_info_football(callback: types.CallbackQuery):
     await callback.answer()
     await show_football_info(callback, callback.from_user.id, is_callback=True)
 
 
-@dp.callback_query(lambda c: c.data == "info_crash")
+@dp.callback_query(_inline_filter(lambda c: c.data == "info_crash"))
 async def process_info_crash(callback: types.CallbackQuery):
     await callback.answer()
     await show_crash_info(callback, callback.from_user.id, is_callback=True)
@@ -9273,11 +9370,7 @@ async def process_info_crash(callback: types.CallbackQuery):
 async def start_mines_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     game_id = get_next_game_id()
@@ -9507,18 +9600,14 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 
 async def start_tower_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     game_id = get_next_game_id()
@@ -9754,7 +9843,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 
@@ -9893,11 +9982,7 @@ def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game
 async def start_qwak_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     game_id = get_next_game_id()
@@ -9978,7 +10063,7 @@ async def show_qwak_grid_from_message(message, user_id, game_id, game_over=False
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=False, won=False):
@@ -10020,18 +10105,14 @@ async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=Fal
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 
 async def start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     game_id = get_next_game_id()
@@ -10267,11 +10348,11 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 
-@dp.callback_query(lambda c: c.data == "tower")
+@dp.callback_query(_inline_filter(lambda c: c.data == "tower"))
 async def process_tower_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -10280,11 +10361,7 @@ async def process_tower_start(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, chat_id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -10353,10 +10430,10 @@ async def process_tower_start(callback: types.CallbackQuery):
 
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("tower_count_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_count_")))
 async def process_tower_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -10409,11 +10486,7 @@ async def process_tower_count(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, game["chat_id"])
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=game["chat_id"], message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(game["chat_id"], game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -10424,7 +10497,7 @@ async def process_tower_count(callback: types.CallbackQuery):
     await show_tower_grid_from_callback(callback, user_id, game_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("tower_cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_cell_")))
 async def process_tower_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -10714,10 +10787,10 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("tower_cashout_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_cashout_")))
 async def process_tower_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -10775,7 +10848,7 @@ async def process_tower_cashout(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data.startswith("exit_tower_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_tower_")))
 async def process_exit_tower(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -10843,7 +10916,7 @@ async def process_exit_tower(callback: types.CallbackQuery):
     await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data.startswith("tower_back_to_catalog_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_back_to_catalog_")))
 async def process_tower_back_to_catalog(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -10871,11 +10944,7 @@ async def process_tower_back_to_catalog(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, callback.message.chat.id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(callback.message.chat.id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -10888,7 +10957,7 @@ async def process_tower_back_to_catalog(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data == "qwak")
+@dp.callback_query(_inline_filter(lambda c: c.data == "qwak"))
 async def process_qwak_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -10902,11 +10971,7 @@ async def process_qwak_start(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, chat_id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -10917,7 +10982,7 @@ async def process_qwak_start(callback: types.CallbackQuery):
     await start_qwak_game_from_command(callback.message, user_id, chat_id, bet)
 
 
-@dp.callback_query(lambda c: c.data.startswith("qwak_cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("qwak_cell_")))
 async def process_qwak_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 4:
@@ -10998,7 +11063,7 @@ async def process_qwak_cell_click(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data.startswith("qwak_cashout_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("qwak_cashout_")))
 async def process_qwak_cashout(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -11046,7 +11111,7 @@ async def process_qwak_cashout(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data.startswith("exit_qwak_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_qwak_")))
 async def process_exit_qwak(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -11112,7 +11177,7 @@ async def process_exit_qwak(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data.startswith("cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("cell_")))
 async def process_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11377,10 +11442,10 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("cashout_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("cashout_")))
 async def process_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11438,7 +11503,7 @@ async def process_cashout(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data.startswith("exit_game_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_game_")))
 async def process_exit_game(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11506,7 +11571,7 @@ async def process_exit_game(callback: types.CallbackQuery):
     await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data.startswith("mines_count_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("mines_count_")))
 async def process_mines_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11559,11 +11624,7 @@ async def process_mines_count(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, game["chat_id"])
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=game["chat_id"], message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(game["chat_id"], game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -11574,7 +11635,7 @@ async def process_mines_count(callback: types.CallbackQuery):
     await show_mines_grid_from_callback(callback, user_id, game_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("back_to_catalog_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("back_to_catalog_")))
 async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11602,11 +11663,7 @@ async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, callback.message.chat.id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(callback.message.chat.id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -11618,7 +11675,7 @@ async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
     await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-@dp.callback_query(lambda c: c.data == "mines")
+@dp.callback_query(_inline_filter(lambda c: c.data == "mines"))
 async def process_mines_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -11627,11 +11684,7 @@ async def process_mines_start(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, chat_id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -11704,11 +11757,11 @@ async def process_mines_start(callback: types.CallbackQuery):
 
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
 
-@dp.callback_query(lambda c: c.data == "diamonds")
+@dp.callback_query(_inline_filter(lambda c: c.data == "diamonds"))
 async def process_diamonds_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -11717,11 +11770,7 @@ async def process_diamonds_start(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, chat_id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -11788,10 +11837,10 @@ async def process_diamonds_start(callback: types.CallbackQuery):
 
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("diamonds_count_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_count_")))
 async def process_diamonds_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -11844,11 +11893,7 @@ async def process_diamonds_count(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, game["chat_id"])
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=game["chat_id"], message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(game["chat_id"], game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -11859,7 +11904,7 @@ async def process_diamonds_count(callback: types.CallbackQuery):
     await show_diamonds_grid_from_callback(callback, user_id, game_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("diamonds_cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_cell_")))
 async def process_diamonds_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -12140,10 +12185,10 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
     key = get_chat_key(user_id, game["chat_id"])
     if key not in game_messages:
         game_messages[key] = []
-    game_messages[key].append(msg.message_id)
+    _remember_message(game_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("diamonds_cashout_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_cashout_")))
 async def process_diamonds_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -12201,7 +12246,7 @@ async def process_diamonds_cashout(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data.startswith("exit_diamonds_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_diamonds_")))
 async def process_exit_diamonds(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -12269,7 +12314,7 @@ async def process_exit_diamonds(callback: types.CallbackQuery):
     await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data.startswith("diamonds_back_to_catalog_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_back_to_catalog_")))
 async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
@@ -12297,11 +12342,7 @@ async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, callback.message.chat.id)
     if key in game_messages:
-        for msg_id in game_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(callback.message.chat.id, game_messages[key], callback.bot)
         game_messages[key] = []
 
     try:
@@ -12317,11 +12358,7 @@ async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
 async def start_gold_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     game_id = get_next_game_id()
@@ -12547,11 +12584,11 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
         key = get_chat_key(user_id, game["chat_id"])
         if key not in game_messages:
             game_messages[key] = []
-        game_messages[key].append(msg.message_id)
+        _remember_message(game_messages, key, msg.message_id)
 
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("gold_cell_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("gold_cell_")))
 async def process_gold_cell(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 5:
@@ -12628,7 +12665,7 @@ async def process_gold_cell(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("gold_cashout_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("gold_cashout_")))
 async def process_gold_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 3:
@@ -12682,7 +12719,7 @@ async def process_gold_cashout(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("exit_gold_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("exit_gold_")))
 async def process_exit_gold(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 3:
@@ -12747,7 +12784,7 @@ async def process_exit_gold(callback: types.CallbackQuery):
     await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data in ["gold", "info_gold"])
+@dp.callback_query(_inline_filter(lambda c: c.data in ["gold", "info_gold"]))
 async def process_gold_info_callback(callback: types.CallbackQuery):
     await callback.answer()
     await show_gold_info(callback, callback.from_user.id, is_callback=True)
@@ -12798,11 +12835,7 @@ def format_21_cards(cards):
 async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], bot)
         user_messages[key] = []
 
     if user_id in active_games:
@@ -12883,7 +12916,7 @@ async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
     game_data["message_id"] = msg.message_id
     if key not in user_messages:
         user_messages[key] = []
-    user_messages[key].append(msg.message_id)
+    _remember_message(user_messages, key, msg.message_id)
 
 
 async def show_twentyone_from_callback(callback: types.CallbackQuery, user_id: int, game_id: int):
@@ -13048,7 +13081,7 @@ async def update_twentyone_game_view(message_obj, user_id, game_id, user_first_n
         game["message_id"] = msg.message_id
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("to_start_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_start_")))
 async def process_twentyone_start(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13138,7 +13171,7 @@ async def process_twentyone_start(callback: types.CallbackQuery):
     await update_twentyone_game_view(callback.message, user_id, game_id, game.get("user_first_name"))
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("to_hit_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_hit_")))
 async def process_twentyone_hit(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13205,7 +13238,7 @@ async def process_twentyone_hit(callback: types.CallbackQuery):
         await update_twentyone_game_view(callback.message, user_id, game_id, game.get("user_first_name"))
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("to_stand_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_stand_")))
 async def process_twentyone_stand(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13326,7 +13359,7 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("to_cancel_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_cancel_")))
 async def process_twentyone_cancel(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13360,7 +13393,7 @@ async def process_twentyone_cancel(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data == "play")
+@dp.callback_query(_inline_filter(lambda c: c.data == "play"))
 async def process_play(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13368,11 +13401,7 @@ async def process_play(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, callback.message.chat.id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=callback.message.chat.id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(callback.message.chat.id, user_messages[key], callback.bot)
         user_messages[key] = []
 
     try:
@@ -13384,7 +13413,7 @@ async def process_play(callback: types.CallbackQuery):
     await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-@dp.callback_query(lambda c: c.data == "back")
+@dp.callback_query(_inline_filter(lambda c: c.data == "back"))
 async def process_back(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13393,11 +13422,7 @@ async def process_back(callback: types.CallbackQuery):
 
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
-        for msg_id in user_messages[key]:
-            try:
-                await callback.bot.delete_message(chat_id=chat_id, message_id=msg_id)
-            except Exception:
-                pass
+        await _delete_messages(chat_id, user_messages[key], callback.bot)
         user_messages[key] = []
 
     try:
@@ -13449,10 +13474,10 @@ async def process_back(callback: types.CallbackQuery):
 
     if key not in user_messages:
         user_messages[key] = []
-    user_messages[key].append(msg.message_id)
+    _remember_message(user_messages, key, msg.message_id)
 
 
-@dp.callback_query(lambda c: c.data.startswith("noop_") or c.data.startswith("tower_noop_") or c.data.startswith("qwak_noop_") or c.data.startswith("scratch_noop_") or c.data.startswith("diamonds_noop_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("noop_") or c.data.startswith("tower_noop_") or c.data.startswith("qwak_noop_") or c.data.startswith("scratch_noop_") or c.data.startswith("diamonds_noop_")))
 async def process_noop(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13465,7 +13490,7 @@ async def process_noop(callback: types.CallbackQuery):
     await callback.answer("Игра завершена.")
 
 
-@dp.callback_query(lambda c: c.data == "check_bonus")
+@dp.callback_query(_inline_filter(lambda c: c.data == "check_bonus"))
 async def process_check_bonus(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13513,7 +13538,7 @@ async def process_check_bonus(callback: types.CallbackQuery):
         await callback.answer("Ошибка при начислении бонуса!", show_alert=True)
 
 
-@dp.callback_query(lambda c: c.data == "bonus_tutorial")
+@dp.callback_query(_inline_filter(lambda c: c.data == "bonus_tutorial"))
 async def process_bonus_tutorial(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13548,7 +13573,7 @@ async def process_bonus_tutorial(callback: types.CallbackQuery):
     )
 
 
-@dp.callback_query(lambda c: c.data == "bonus_continue")
+@dp.callback_query(_inline_filter(lambda c: c.data == "bonus_continue"))
 async def process_bonus_continue(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13610,10 +13635,10 @@ def _apply_mp_transfer(sender_id, receiver_id, amount, today):
         return False
 
 
-@dp.message(lambda message: message.text and (
+@dp.message(_inline_filter(lambda message: message.text and (
     message.text.lower().startswith("дать") or 
     message.text.lower().startswith("пер")
-))
+)))
 async def cmd_transfer(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
@@ -13771,7 +13796,7 @@ async def cmd_transfer(message: types.Message):
 
 
 @dp.message(Command("point", "points", "mp", "поинт", "поинты"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["поинт", "поинты", "point", "points", "/point", "/points", "мп", "/mp", "mp"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["поинт", "поинты", "point", "points", "/point", "/points", "мп", "/mp", "mp"]))
 async def cmd_point(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
@@ -13791,12 +13816,12 @@ async def cmd_point(message: types.Message):
 
 
 @dp.message(Command("send", "mpsend", "sendmp"))
-@dp.message(lambda message: message.text and (
+@dp.message(_inline_filter(lambda message: message.text and (
     message.text.strip().lower() == "/send" or
     message.text.strip().lower() == "send" or
     message.text.strip().lower().startswith("/send ") or
     message.text.strip().lower().startswith("send ")
-))
+)))
 async def cmd_send_mp(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
@@ -13953,7 +13978,7 @@ async def cmd_send_mp(message: types.Message):
     )
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("mp_no_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("mp_no_")))
 async def process_mp_no(callback: types.CallbackQuery):
     token = callback.data.split("_")[-1]
     transfer = mp_pending_transfers.get(token)
@@ -13969,7 +13994,7 @@ async def process_mp_no(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("mp_yes_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("mp_yes_")))
 async def process_mp_yes(callback: types.CallbackQuery):
     token = callback.data.split("_")[-1]
     transfer = mp_pending_transfers.get(token)
@@ -14174,12 +14199,12 @@ active_giveaways = {}
 giveaway_counter = 0
 
 
-@dp.message(lambda message: message.text and (
+@dp.message(_inline_filter(lambda message: message.text and (
     message.text.lower().startswith("раздача") or
     message.text.lower().startswith("/раздача") or
     message.text.lower().startswith("роздача") or
     message.text.lower().startswith("/giveaway")
-))
+)))
 async def cmd_giveaway(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
@@ -14262,7 +14287,7 @@ async def cmd_giveaway(message: types.Message):
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("giveaway_claim_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("giveaway_claim_")))
 async def process_giveaway_claim(callback: types.CallbackQuery):
     try:
         gid = int(callback.data.split("_")[-1])
@@ -14400,7 +14425,7 @@ async def cmd_demo(message: types.Message):
     await _send_demo_status(message, user_id)
 
 
-@dp.callback_query(lambda c: c.data in ("demo_on", "demo_off"))
+@dp.callback_query(_inline_filter(lambda c: c.data in ("demo_on", "demo_off")))
 async def process_demo_toggle(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if callback.message and callback.message.chat.type != "private":
@@ -14483,7 +14508,7 @@ async def _show_settings(target, user_id, edit=False):
 
 
 @dp.message(Command("settings", "настройки"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings")))
 async def cmd_settings(message: types.Message):
     if message.chat.type != "private":
         await message.answer(f"<i>{tr(message.from_user.id, 'settings_private_only')}</i>", parse_mode=ParseMode.HTML)
@@ -14536,7 +14561,7 @@ async def _handle_settings_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda callback: bool(callback.data and (callback.data == "settings_open" or callback.data.startswith("settings_"))))
+@dp.callback_query(_inline_filter(lambda callback: bool(callback.data and (callback.data == "settings_open" or callback.data.startswith("settings_")))))
 async def process_settings_callback(callback: types.CallbackQuery):
     await _handle_settings_callback(callback)
 
@@ -14683,7 +14708,7 @@ async def cmd_admin_list(message: types.Message):
     ]))
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("admctl_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("admctl_")))
 async def process_admin_control_callback(callback: types.CallbackQuery):
     owner_id = callback.from_user.id
     if not is_owner(owner_id):
@@ -14782,7 +14807,7 @@ async def process_admin_control_callback(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(lambda message: message.from_user and message.from_user.id in admin_limit_sessions and message.text)
+@dp.message(_inline_filter(lambda message: message.from_user and message.from_user.id in admin_limit_sessions and message.text))
 async def process_admin_limit_input(message: types.Message):
     owner_id = message.from_user.id
     if not is_owner(owner_id):
@@ -15258,7 +15283,7 @@ async def cmd_untrban(message: types.Message):
 
 
 @dp.message(Command("get", "гет"))
-@dp.message(lambda message: message.text and message.text.strip().lower().split()[0] in ["гет", "get", "/get", "/гет"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ["гет", "get", "/get", "/гет"]))
 async def cmd_get(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
@@ -15418,7 +15443,7 @@ async def cmd_get(message: types.Message):
     await message.reply(info_text, reply_markup=get_keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("adm_reset_rec_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("adm_reset_rec_")))
 async def process_adm_reset_rec(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         await callback.answer("У вас нет прав администратора!", show_alert=True)
@@ -15550,7 +15575,7 @@ async def cmd_thistory(message: types.Message):
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("thist_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("thist_")))
 async def process_thistory_page(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         await callback.answer("У вас нет прав администратора!", show_alert=True)
@@ -15638,7 +15663,7 @@ def build_deposit_main_menu(user_id, user_name):
 
 
 @dp.message(Command("deposit", "депозит", "банк", "депозиты"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"]))
 async def cmd_deposit(message: types.Message):
     user_id = message.from_user.id
     user_name = get_user_display_name(message.from_user.id, message.from_user.first_name)
@@ -15646,7 +15671,7 @@ async def cmd_deposit(message: types.Message):
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data == "dep_main")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_main"))
 async def process_dep_main(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_deposit_main_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15689,7 +15714,7 @@ def build_time_deposits_menu(user_id, user_name):
     return text, keyboard
 
 
-@dp.callback_query(lambda c: c.data == "dep_time")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_time"))
 async def process_dep_time(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_time_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15744,7 +15769,7 @@ def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int 
     return text, keyboard
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_term_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_term_")))
 async def process_dep_term(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -15757,7 +15782,7 @@ async def process_dep_term(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_make_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_make_")))
 async def process_dep_make(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     days = int(parts[2])
@@ -15877,7 +15902,7 @@ def build_my_deposits_menu(user_id, user_name):
     return text, keyboard
 
 
-@dp.callback_query(lambda c: c.data == "dep_my")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_my"))
 async def process_dep_my(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_my_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15887,7 +15912,7 @@ async def process_dep_my(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data == "dep_notif_toggle")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_notif_toggle"))
 async def process_dep_notif_toggle(callback: types.CallbackQuery):
     toggle_bank_notifications(callback.from_user.id)
     await callback.answer("Настройки уведомлений обновлены!")
@@ -15956,7 +15981,7 @@ def build_active_deposits_menu(user_id, user_name, page=1):
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_active_all_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_active_all_")))
 async def process_dep_active_all(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -16023,7 +16048,7 @@ def build_withdraw_deposits_menu(user_id, user_name, page=1):
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_withdraw_menu_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_withdraw_menu_")))
 async def process_dep_withdraw_menu(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -16037,7 +16062,7 @@ async def process_dep_withdraw_menu(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-@dp.callback_query(lambda c: c.data == "dep_wd_all")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_wd_all"))
 async def process_dep_wd_all(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     ok, res = withdraw_all_time_deposits(user_id)
@@ -16052,7 +16077,7 @@ async def process_dep_wd_all(callback: types.CallbackQuery):
         pass
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_wd_one_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_wd_one_")))
 async def process_dep_wd_one(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -16134,7 +16159,7 @@ def build_deposits_history_menu(user_id, user_name, page=1):
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_history_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_history_")))
 async def process_dep_history(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -16190,7 +16215,7 @@ def build_savings_menu(user_id, user_name):
     return text, keyboard
 
 
-@dp.callback_query(lambda c: c.data == "dep_savings")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_savings"))
 async def process_dep_savings(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_savings_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -16222,7 +16247,7 @@ def build_savings_deposit_input_menu(user_id, user_name):
     return text, keyboard
 
 
-@dp.callback_query(lambda c: c.data == "dep_sav_dep")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_sav_dep"))
 async def process_dep_sav_dep(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_savings_deposit_input_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -16232,7 +16257,7 @@ async def process_dep_sav_dep(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "dep_sav_wd")
+@dp.callback_query(_inline_filter(lambda c: c.data == "dep_sav_wd"))
 async def process_dep_sav_wd(callback: types.CallbackQuery):
     await callback.answer()
     clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
@@ -16259,7 +16284,7 @@ async def process_dep_sav_wd(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("dep_sav_hist_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_sav_hist_")))
 async def process_dep_sav_hist(callback: types.CallbackQuery):
     await callback.answer()
     page = 1
@@ -16299,11 +16324,11 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
 
 
 
-@dp.message(lambda message: message.reply_to_message and message.text and (
+@dp.message(_inline_filter(lambda message: message.reply_to_message and message.text and (
     "ДЕПОЗИТ НА" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
     "ПОПОЛНИТЬ НАКОП. СЧЕТ" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
     "СНЯТЬ С НАКОП. СЧЕТА" in (message.reply_to_message.text or message.reply_to_message.caption or "")
-))
+)))
 async def process_bank_reply_message(message: types.Message):
     rep_text = message.reply_to_message.text or message.reply_to_message.caption or ""
     user_id = message.from_user.id
@@ -16402,6 +16427,7 @@ def format_deal_date(dt_str):
     return dt_str
 
 
+@_event_read_cache
 def get_p2p_settings():
     try:
         cursor.execute("SELECT id, official_sell_enabled, official_buy_enabled, official_sell_rate, official_buy_rate, rate_min, rate_max, interval_minutes, last_update FROM p2p_settings WHERE id = 1")
@@ -16473,6 +16499,7 @@ def update_p2p_rate_fluctuation(force=False):
         return False, settings
 
 
+@_event_read_cache
 def get_p2p_account(user_id):
     try:
         cursor.execute("SELECT user_id, mcoin_balance, mp_balance, rating, deals_count, last_deposit_date, sell_order_active, sell_price, buy_order_active, buy_price FROM p2p_accounts WHERE user_id = ?", (user_id,))
@@ -17087,7 +17114,7 @@ def render_sexchange_menu():
 
 
 @dp.message(Command("exchange", "обменник"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"]))
 async def cmd_exchange(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
         keyboard = InlineKeyboardMarkup(
@@ -17107,7 +17134,7 @@ async def cmd_exchange(message: types.Message):
 
 
 @dp.message(Command("sexchange", "setexchange"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["/sexchange", "sexchange", "/setexchange", "setexchange"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["/sexchange", "sexchange", "/setexchange", "setexchange"]))
 async def cmd_sexchange(message: types.Message):
     if message.from_user.id not in ADMINS:
         return
@@ -17116,14 +17143,14 @@ async def cmd_sexchange(message: types.Message):
 
 
 
-@dp.callback_query(lambda c: c.data == "p2p_main")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_main"))
 async def cb_p2p_main(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
     await show_p2p_main(callback, user_id=callback.from_user.id, first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name), edit=True)
 
 
-@dp.callback_query(lambda c: c.data in ["p2p_history", "p2p_hist_1"] or c.data.startswith("p2p_hist_"))
+@dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_history", "p2p_hist_1"] or c.data.startswith("p2p_hist_")))
 async def cb_p2p_history(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17140,7 +17167,7 @@ async def cb_p2p_history(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_manage")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_manage"))
 async def cb_p2p_manage(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17151,7 +17178,7 @@ async def cb_p2p_manage(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_toggle_sell")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_toggle_sell"))
 async def cb_p2p_toggle_sell(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -17166,7 +17193,7 @@ async def cb_p2p_toggle_sell(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_toggle_buy")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_toggle_buy"))
 async def cb_p2p_toggle_buy(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -17182,7 +17209,25 @@ async def cb_p2p_toggle_buy(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data in ["p2p_buy_list"] or c.data.startswith("p2p_buy_page_"))
+def _get_p2p_offer_page(user_id, page, buying):
+    if buying:
+        condition = "sell_order_active = 1 AND sell_price > 0 AND mp_balance > 0 AND user_id != ?"
+        columns = "user_id, sell_price, mp_balance, rating"
+        order = "sell_price ASC"
+    else:
+        condition = "buy_order_active = 1 AND buy_price > 0 AND mcoin_balance >= buy_price AND user_id != ?"
+        columns = "user_id, buy_price, mcoin_balance, rating"
+        order = "buy_price DESC"
+    cursor.execute(f"SELECT COUNT(*) FROM p2p_accounts WHERE {condition}", (user_id,))
+    count = cursor.fetchone()[0]
+    per_page = 8
+    total_pages = max(1, math.ceil(count / per_page))
+    page = max(1, min(page, total_pages))
+    cursor.execute(f"SELECT {columns} FROM p2p_accounts WHERE {condition} ORDER BY {order} LIMIT ? OFFSET ?", (user_id, per_page, (page - 1) * per_page))
+    return page, total_pages, cursor.fetchall()
+
+
+@dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_buy_list"] or c.data.startswith("p2p_buy_page_")))
 async def cb_p2p_buy_list(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17194,20 +17239,7 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
             page = 1
 
     current_uid = callback.from_user.id
-    cursor.execute('''
-        SELECT p.user_id, p.sell_price, p.mp_balance, p.rating 
-        FROM p2p_accounts p 
-        WHERE p.sell_order_active = 1 AND p.sell_price > 0 AND p.mp_balance > 0 AND p.user_id != ?
-        ORDER BY p.sell_price ASC
-    ''', (current_uid,))
-    sellers = cursor.fetchall()
-
-    per_page = 8
-    total_pages = max(1, math.ceil(len(sellers) / per_page))
-    page = max(1, min(page, total_pages))
-
-    start_idx = (page - 1) * per_page
-    page_sellers = sellers[start_idx:start_idx + per_page]
+    page, total_pages, page_sellers = _get_p2p_offer_page(current_uid, page, True)
 
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
@@ -17264,7 +17296,7 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data == "p2p_buy_bot")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_buy_bot"))
 async def cb_p2p_buy_bot(callback: types.CallbackQuery):
     await callback.answer()
     update_p2p_rate_fluctuation(force=False)
@@ -17319,7 +17351,7 @@ async def cb_p2p_buy_bot(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_bbot_custom")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_bbot_custom"))
 async def cb_p2p_bbot_custom(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "buy_bot_custom"
@@ -17337,7 +17369,7 @@ async def cb_p2p_bbot_custom(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_bbot_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_bbot_")))
 async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
     try:
         amount_mp = int(callback.data.replace("p2p_bbot_", ""))
@@ -17384,7 +17416,7 @@ async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
         await callback.message.answer(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_conf_bbot_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_bbot_")))
 async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -17423,7 +17455,7 @@ async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_buy_seller_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_buy_seller_")))
 async def cb_p2p_buy_seller(callback: types.CallbackQuery):
     try:
         seller_id = int(callback.data.replace("p2p_buy_seller_", ""))
@@ -17477,7 +17509,7 @@ async def cb_p2p_buy_seller(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_bamt_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_bamt_")))
 async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_bamt_", "").split("_")
     if len(parts) < 2:
@@ -17524,14 +17556,14 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
         await callback.message.answer(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_cancel_buy")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_cancel_buy"))
 async def cb_p2p_cancel_buy(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer("Сделка отменена!")
     await show_p2p_main(callback, user_id=callback.from_user.id, first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name), edit=True)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_conf_buy_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_buy_")))
 async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     parts = callback.data.replace("p2p_conf_buy_", "").split("_")
@@ -17573,7 +17605,7 @@ async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_rate_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_rate_")))
 async def cb_p2p_rate_deal(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_rate_", "").split("_")
     if len(parts) < 3:
@@ -17608,7 +17640,7 @@ async def cb_p2p_rate_deal(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data in ["p2p_sell_list"] or c.data.startswith("p2p_sell_page_"))
+@dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_sell_list"] or c.data.startswith("p2p_sell_page_")))
 async def cb_p2p_sell_list(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17620,20 +17652,7 @@ async def cb_p2p_sell_list(callback: types.CallbackQuery):
             page = 1
 
     current_uid = callback.from_user.id
-    cursor.execute('''
-        SELECT p.user_id, p.buy_price, p.mcoin_balance, p.rating 
-        FROM p2p_accounts p 
-        WHERE p.buy_order_active = 1 AND p.buy_price > 0 AND p.mcoin_balance >= p.buy_price AND p.user_id != ?
-        ORDER BY p.buy_price DESC
-    ''', (current_uid,))
-    buyers = cursor.fetchall()
-
-    per_page = 8
-    total_pages = max(1, math.ceil(len(buyers) / per_page))
-    page = max(1, min(page, total_pages))
-
-    start_idx = (page - 1) * per_page
-    page_buyers = buyers[start_idx:start_idx + per_page]
+    page, total_pages, page_buyers = _get_p2p_offer_page(current_uid, page, False)
 
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
@@ -17689,7 +17708,7 @@ async def cb_p2p_sell_list(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_sell_bot")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_sell_bot"))
 async def cb_p2p_sell_bot(callback: types.CallbackQuery):
     await callback.answer()
     update_p2p_rate_fluctuation(force=False)
@@ -17745,7 +17764,7 @@ async def cb_p2p_sell_bot(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_sbot_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sbot_")))
 async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
     try:
         amount_mp = int(callback.data.replace("p2p_sbot_", ""))
@@ -17792,7 +17811,7 @@ async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
         await callback.message.answer(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_conf_sbot_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_sbot_")))
 async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -17831,7 +17850,7 @@ async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_sell_buyer_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sell_buyer_")))
 async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
     try:
         buyer_id = int(callback.data.replace("p2p_sell_buyer_", ""))
@@ -17889,7 +17908,7 @@ async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_sbuy_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sbuy_")))
 async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_sbuy_", "").split("_")
     if len(parts) < 2:
@@ -17936,7 +17955,7 @@ async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
         await callback.message.answer(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_conf_sbuy_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_sbuy_")))
 async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     parts = callback.data.replace("p2p_conf_sbuy_", "").split("_")
@@ -17979,7 +17998,7 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data == "p2p_deposit")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_deposit"))
 async def cb_p2p_deposit(callback: types.CallbackQuery):
     await callback.answer()
     text = (
@@ -18004,7 +18023,7 @@ async def cb_p2p_deposit(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_dep_mcoin")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_dep_mcoin"))
 async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "dep_mcoin"
@@ -18045,7 +18064,7 @@ async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_dmc_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_dmc_")))
 async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18076,7 +18095,7 @@ async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_dep_mpoint")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_dep_mpoint"))
 async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "dep_mpoint"
@@ -18113,7 +18132,7 @@ async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_dmp_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_dmp_")))
 async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18143,7 +18162,7 @@ async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_withdraw")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_withdraw"))
 async def cb_p2p_withdraw(callback: types.CallbackQuery):
     await callback.answer()
     text = (
@@ -18168,7 +18187,7 @@ async def cb_p2p_withdraw(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_wth_mcoin")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_wth_mcoin"))
 async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "wth_mcoin"
@@ -18204,7 +18223,7 @@ async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_wmc_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_wmc_")))
 async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18232,7 +18251,7 @@ async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_wth_mpoint")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_wth_mpoint"))
 async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "wth_mpoint"
@@ -18268,7 +18287,7 @@ async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("p2p_wmp_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_wmp_")))
 async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18297,7 +18316,7 @@ async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
 
 
 
-@dp.callback_query(lambda c: c.data == "p2p_set_sell_price")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_set_sell_price"))
 async def cb_p2p_set_sell_price(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "set_sell_price"
@@ -18315,7 +18334,7 @@ async def cb_p2p_set_sell_price(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "p2p_set_buy_price")
+@dp.callback_query(_inline_filter(lambda c: c.data == "p2p_set_buy_price"))
 async def cb_p2p_set_buy_price(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "set_buy_price"
@@ -18333,13 +18352,13 @@ async def cb_p2p_set_buy_price(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "noop_p2p")
+@dp.callback_query(_inline_filter(lambda c: c.data == "noop_p2p"))
 async def cb_noop_p2p(callback: types.CallbackQuery):
     await callback.answer()
 
 
 
-@dp.callback_query(lambda c: c.data == "sexch_refresh")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_refresh"))
 async def cb_sexch_refresh(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18352,7 +18371,7 @@ async def cb_sexch_refresh(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_tog_sell")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_tog_sell"))
 async def cb_sexch_tog_sell(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18368,7 +18387,7 @@ async def cb_sexch_tog_sell(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_tog_buy")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_tog_buy"))
 async def cb_sexch_tog_buy(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18384,7 +18403,7 @@ async def cb_sexch_tog_buy(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_reroll")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_reroll"))
 async def cb_sexch_reroll(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18397,7 +18416,7 @@ async def cb_sexch_reroll(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_set_sell")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_sell"))
 async def cb_sexch_set_sell(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18417,7 +18436,7 @@ async def cb_sexch_set_sell(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_set_buy")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_buy"))
 async def cb_sexch_set_buy(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18437,7 +18456,7 @@ async def cb_sexch_set_buy(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_set_range")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_range"))
 async def cb_sexch_set_range(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18457,7 +18476,7 @@ async def cb_sexch_set_range(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "sexch_set_interval")
+@dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_interval"))
 async def cb_sexch_set_interval(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18478,7 +18497,7 @@ async def cb_sexch_set_interval(callback: types.CallbackQuery):
 
 
 
-@dp.message(lambda message: message.text and (
+@dp.message(_inline_filter(lambda message: message.text and (
     message.from_user.id in admin_sexchange_state or
     message.from_user.id in p2p_user_action or
     (message.reply_to_message and (
@@ -18495,7 +18514,7 @@ async def cb_sexch_set_interval(callback: types.CallbackQuery):
         "ИЗМЕНИТЬ КУРС ПРОДАЖИ" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
         "ИЗМЕНИТЬ КУРС ПОКУПКИ" in (message.reply_to_message.text or message.reply_to_message.caption or "")
     ))
-))
+)))
 async def process_p2p_and_admin_reply_message(message: types.Message):
     if message.chat.type != "private":
         return
@@ -19035,7 +19054,7 @@ async def show_temple_target_selected(event, sender_id: int, sender_name: str, t
 
 
 @dp.message(Command("temple", "храм"))
-@dp.message(lambda message: message.text and re.match(r'^[!/.]?(храм|temple)(\s+|$)', message.text, re.IGNORECASE))
+@dp.message(_inline_filter(lambda message: message.text and re.match(r'^[!/.]?(храм|temple)(\s+|$)', message.text, re.IGNORECASE)))
 async def cmd_temple(message: types.Message):
     user_id = message.from_user.id
     raw_text = message.text.strip()
@@ -19072,7 +19091,7 @@ async def cmd_temple(message: types.Message):
     await message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "temple_enter")
+@dp.callback_query(_inline_filter(lambda c: c.data == "temple_enter"))
 async def cb_temple_enter(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -19112,7 +19131,7 @@ async def cb_temple_enter(callback: types.CallbackQuery):
     await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "temple_change_target")
+@dp.callback_query(_inline_filter(lambda c: c.data == "temple_change_target"))
 async def cb_temple_change_target(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -19128,7 +19147,7 @@ async def cb_temple_change_target(callback: types.CallbackQuery):
         await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("temple_back_target_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_back_target_")))
 async def cb_temple_back_target(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_back_target_", ""))
@@ -19136,7 +19155,7 @@ async def cb_temple_back_target(callback: types.CallbackQuery):
     await show_temple_target_selected(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), target_id, edit=True)
 
 
-@dp.callback_query(lambda c: c.data.startswith("temple_gifts_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_gifts_")))
 async def cb_temple_gifts(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_gifts_", ""))
@@ -19171,7 +19190,7 @@ async def cb_temple_gifts(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("temple_sel_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_sel_")))
 async def cb_temple_select_gift(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_sel_", "").split("_")
@@ -19209,7 +19228,7 @@ async def cb_temple_select_gift(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("temple_com_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_com_")))
 async def cb_temple_add_comment(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_com_", "").split("_")
@@ -19226,7 +19245,7 @@ async def cb_temple_add_comment(callback: types.CallbackQuery):
     await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data.startswith("temple_pay_"))
+@dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_pay_")))
 async def cb_temple_pay(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_pay_", "").split("_")
@@ -19254,12 +19273,12 @@ async def cb_temple_pay(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка создания счета: {e}", show_alert=True)
 
 
-@dp.pre_checkout_query(lambda q: q.invoice_payload and q.invoice_payload.startswith("temple_gift_"))
+@dp.pre_checkout_query(_inline_filter(lambda q: q.invoice_payload and q.invoice_payload.startswith("temple_gift_")))
 async def cb_temple_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
     await pre_checkout_query.answer(ok=True)
 
 
-@dp.message(lambda m: m.successful_payment and m.successful_payment.invoice_payload and m.successful_payment.invoice_payload.startswith("temple_gift_"))
+@dp.message(_inline_filter(lambda m: m.successful_payment and m.successful_payment.invoice_payload and m.successful_payment.invoice_payload.startswith("temple_gift_")))
 async def cb_temple_successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     parts = payload.split("_")
@@ -19306,10 +19325,10 @@ async def cb_temple_successful_payment(message: types.Message):
             pass
 
 
-@dp.message(lambda message: message.text and (
+@dp.message(_inline_filter(lambda message: message.text and (
     message.from_user.id in _temple_waiting_comment or
     message.from_user.id in _temple_waiting_target
-))
+)))
 async def process_temple_text_input(message: types.Message):
     user_id = message.from_user.id
     raw_text = message.text.strip()
@@ -19365,7 +19384,10 @@ async def check_time_deposits_task():
     while True:
         try:
             now = datetime.now()
-            cursor.execute("SELECT id, user_id, amount, days, percent, profit, end_at_dt FROM time_deposits WHERE status = 'active'")
+            cursor.execute(
+                "SELECT id, user_id, amount, days, percent, profit, end_at_dt FROM time_deposits WHERE status = 'active' AND (end_at_dt <= ? OR end_at_dt NOT GLOB '????-??-??T??:??:??*')",
+                (now.isoformat(),),
+            )
             rows = cursor.fetchall()
             for r in rows:
                 dep_id, uid, amount, days, percent, profit, end_at_dt_str = r
@@ -19399,19 +19421,23 @@ async def check_time_deposits_task():
         await asyncio.sleep(30)
 
 
+def _accrue_savings_interest(now_iso):
+    cursor.execute(
+        """
+        UPDATE savings_accounts
+        SET accumulated_interest = COALESCE(accumulated_interest, 0.0) + balance * ?, last_accrual = ?
+        WHERE balance > 0
+        """,
+        (0.002 / 24.0, now_iso),
+    )
+    conn.commit()
+
+
 async def accrue_savings_task():
     while True:
         try:
             await asyncio.sleep(3600)
-            cursor.execute("SELECT user_id, balance, accumulated_interest FROM savings_accounts WHERE balance > 0")
-            rows = cursor.fetchall()
-            now_iso = datetime.now().isoformat()
-            for uid, balance, accumulated in rows:
-                if balance > 0:
-                    hourly_accrual = balance * (0.002 / 24.0)
-                    new_accum = (accumulated or 0.0) + hourly_accrual
-                    cursor.execute("UPDATE savings_accounts SET accumulated_interest = ?, last_accrual = ? WHERE user_id = ?", (new_accum, now_iso, uid))
-            conn.commit()
+            _accrue_savings_interest(datetime.now().isoformat())
         except Exception:
             await asyncio.sleep(60)
 
@@ -19529,6 +19555,7 @@ async def check_user_subscribed(user_id, chat) -> bool:
     return False
 
 
+@_event_read_cache
 def task_completed(user_id, task_id) -> bool:
     try:
         cursor.execute(
@@ -19586,7 +19613,7 @@ def build_earn_menu(user_id) -> (str, InlineKeyboardMarkup):
 
 
 @dp.message(Command("earning", "earn", "заработать", "заработок"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn"]))
 async def cmd_earning(message: types.Message):
     user_id = message.from_user.id
     text, keyboard = build_earn_menu(user_id)
@@ -19596,7 +19623,7 @@ async def cmd_earning(message: types.Message):
         await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data == "earn_refresh")
+@dp.callback_query(_inline_filter(lambda c: c.data == "earn_refresh"))
 async def process_earn_refresh(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     text, keyboard = build_earn_menu(user_id)
@@ -19607,7 +19634,7 @@ async def process_earn_refresh(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("earn_check:"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("earn_check:")))
 async def process_earn_check(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     task_id = callback.data.split(":", 1)[1]
@@ -19656,7 +19683,7 @@ async def process_earn_check(callback: types.CallbackQuery):
 
 
 @dp.message(Command("promote", "продвижение"))
-@dp.message(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение"])
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение"]))
 async def cmd_promote(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
         keyboard = InlineKeyboardMarkup(
@@ -19677,7 +19704,7 @@ async def cmd_promote(message: types.Message):
     await send_promote_main_menu(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
 
 
-@dp.callback_query(lambda c: c.data == "promote_menu")
+@dp.callback_query(_inline_filter(lambda c: c.data == "promote_menu"))
 async def process_promote_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     promote_user_states.pop(user_id, None)
@@ -19685,7 +19712,7 @@ async def process_promote_menu(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data in ["promote_type_channel", "promote_type_chat"])
+@dp.callback_query(_inline_filter(lambda c: c.data in ["promote_type_channel", "promote_type_chat"]))
 async def process_promote_type(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     target_type = "channel" if callback.data == "promote_type_channel" else "chat"
@@ -19720,7 +19747,7 @@ async def process_promote_type(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("promote_price_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_price_")))
 async def process_promote_price_choice(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     state_data = promote_user_states.get(user_id, {})
@@ -19791,7 +19818,7 @@ async def handle_promote_price_selected(chat_id: int, user_id: int, first_name: 
     await bot.send_message(chat_id, text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("promote_subs_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_subs_")))
 async def process_promote_subs_choice(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -19910,16 +19937,12 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
     promote_user_states[user_id] = state_data
 
 
-@dp.callback_query(lambda c: c.data == "promote_cancel")
+@dp.callback_query(_inline_filter(lambda c: c.data == "promote_cancel"))
 async def process_promote_cancel(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     state_data = promote_user_states.pop(user_id, None)
     if state_data and "msg_ids" in state_data:
-        for mid in state_data["msg_ids"]:
-            try:
-                await bot.delete_message(callback.message.chat.id, mid)
-            except Exception:
-                pass
+        await _delete_messages(callback.message.chat.id, state_data["msg_ids"], bot)
 
     rm_msg = await callback.message.answer("❌ <i>Добавление задания отменено.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
     try:
@@ -19971,7 +19994,7 @@ async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, 
     await message.answer("Управляйте заданиями в меню:", reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-@dp.message(lambda message: message.chat_shared is not None)
+@dp.message(_inline_filter(lambda message: message.chat_shared is not None))
 async def process_chat_shared(message: types.Message):
     if message.chat.type != "private":
         return
@@ -19982,11 +20005,7 @@ async def process_chat_shared(message: types.Message):
         return
 
     if "msg_ids" in state_data:
-        for mid in state_data["msg_ids"]:
-            try:
-                await bot.delete_message(message.chat.id, mid)
-            except Exception:
-                pass
+        await _delete_messages(message.chat.id, state_data["msg_ids"], bot)
     try:
         await message.delete()
     except Exception:
@@ -20025,7 +20044,7 @@ async def process_chat_shared(message: types.Message):
     await finalize_p2p_promotion_creation(message, user_id, first_name, state_data, real_chat_id, chat_title, chat_username)
 
 
-@dp.callback_query(lambda c: c.data == "promote_active")
+@dp.callback_query(_inline_filter(lambda c: c.data == "promote_active"))
 async def process_promote_active(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -20073,7 +20092,7 @@ async def process_promote_active(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("promote_toggle_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_toggle_")))
 async def process_promote_toggle(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -20086,7 +20105,7 @@ async def process_promote_toggle(callback: types.CallbackQuery):
     await process_promote_active(callback)
 
 
-@dp.callback_query(lambda c: c.data and c.data.startswith("promote_del_"))
+@dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_del_")))
 async def process_promote_delete(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -20111,7 +20130,7 @@ async def process_promote_delete(callback: types.CallbackQuery):
     await process_promote_active(callback)
 
 
-@dp.callback_query(lambda c: c.data == "promote_completed")
+@dp.callback_query(_inline_filter(lambda c: c.data == "promote_completed"))
 async def process_promote_completed(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -20149,7 +20168,7 @@ async def process_promote_completed(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.callback_query(lambda c: c.data == "promote_rules")
+@dp.callback_query(_inline_filter(lambda c: c.data == "promote_rules"))
 async def process_promote_rules(callback: types.CallbackQuery):
     text = (
         '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Правила добавления заданий:</b>\n'
@@ -20168,7 +20187,7 @@ async def process_promote_rules(callback: types.CallbackQuery):
     await callback.answer()
 
 
-@dp.message(lambda message: message.text and message.from_user.id in promote_user_states)
+@dp.message(_inline_filter(lambda message: message.text and message.from_user.id in promote_user_states))
 async def process_promote_text_input(message: types.Message):
     if message.chat.type != "private":
         return
@@ -20204,11 +20223,7 @@ async def process_promote_text_input(message: types.Message):
             return
 
         if "msg_ids" in state_data:
-            for mid in state_data["msg_ids"]:
-                try:
-                    await bot.delete_message(message.chat.id, mid)
-                except Exception:
-                    pass
+            await _delete_messages(message.chat.id, state_data["msg_ids"], bot)
 
         promote_user_states.pop(user_id, None)
         first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
@@ -20245,7 +20260,7 @@ def _role_emoji(name, fallback):
 
 
 def _register_handler_first(observer, handler, *filters):
-    observer.register(handler, *filters)
+    observer.register(handler, *(_inline_filter(predicate) for predicate in filters))
     observer.handlers.insert(0, observer.handlers.pop())
 
 
