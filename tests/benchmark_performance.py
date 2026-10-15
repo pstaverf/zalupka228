@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import statistics
 import subprocess
+import sys
 import tempfile
 import time
 import tracemalloc
@@ -17,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def load_bot(ref, directory):
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     source = subprocess.check_output(["git", "show", f"{ref}:mines.py"], cwd=ROOT, text=True) if ref else (ROOT / "mines.py").read_text()
     os.environ["TELEGRAM_BOT_TOKEN"] = "123456789:" + "a" * 35
     os.environ["SQLITE_DB_PATH"] = str(Path(directory) / "benchmark.sqlite3")

@@ -22,6 +22,11 @@ from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     KeyboardButtonRequestChat, ChatAdministratorRights, FSInputFile
 )
+from localization import (
+    text as _l, formatted as _lf, format_value as _fmt, label as _label,
+    localized as _localized, canonical_prompt as _canonical_prompt,
+    canonical_choice as _canonical_choice, configure as _configure_localization,
+)
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 
@@ -1195,6 +1200,9 @@ def get_user_language(user_id):
     return get_user_settings(user_id).get("language", "ru")
 
 
+_configure_localization(get_user_language)
+
+
 def tr(user_id, key, **kwargs):
     language = get_user_language(user_id)
     text = TRANSLATIONS.get(language, TRANSLATIONS["ru"]).get(key, TRANSLATIONS["ru"].get(key, key))
@@ -1340,6 +1348,7 @@ def admin_has_permission(user_id, permission):
     return bool(get_admin_control(user_id).get(column, 0))
 
 
+@_localized
 def reserve_admin_usage(admin_id, operation, amount):
     amount = int(amount or 0)
     if amount <= 0 or is_owner(admin_id) or not is_admin(admin_id):
@@ -1351,22 +1360,22 @@ def reserve_admin_usage(admin_id, operation, amount):
         "issue": "issue",
     }.get(operation, "issue")
     if not admin_has_permission(admin_id, permission):
-        return False, "Для вас отключено это право владельцем бота."
+        return False, _l('Для вас отключено это право владельцем бота.')
 
     control = get_admin_control(admin_id)
     today = get_msk_today_str()
     usage_map = {
-        "transfer": ("transfer_limit", "transfer_used", "передачи", "mCoin"),
-        "issue": ("issue_limit", "issue_used", "выдачи", "mCoin"),
-        "mp_transfer": ("mp_transfer_limit", "mp_transfer_used", "передачи", "MP"),
-        "mp_issue": ("mp_issue_limit", "mp_issue_used", "выдачи", "MP"),
+        "transfer": ("transfer_limit", "transfer_used", _l('передачи'), "mCoin"),
+        "issue": ("issue_limit", "issue_used", _l('выдачи'), "mCoin"),
+        "mp_transfer": ("mp_transfer_limit", "mp_transfer_used", _l('передачи'), "MP"),
+        "mp_issue": ("mp_issue_limit", "mp_issue_used", _l('выдачи'), "MP"),
     }
     limit_key, used_key, label, currency = usage_map.get(operation, usage_map["issue"])
     used = int(control.get(used_key, 0) or 0) if control.get("usage_date") == today else 0
     limit = int(control.get(limit_key, 0) or 0)
     if limit > 0 and used + amount > limit:
         remaining = max(0, limit - used)
-        return False, f"Дневной лимит {label}: {format_number(limit)} {currency}. Осталось: {format_number(remaining)} {currency}."
+        return False, _lf('Дневной лимит {0}: {1} {2}. Осталось: {3} {4}.', (_fmt(label, '', -1), _fmt(format_number(limit), '', -1), _fmt(currency, '', -1), _fmt(format_number(remaining), '', -1), _fmt(currency, '', -1)))
 
     try:
         cursor.execute(f'''
@@ -1377,7 +1386,7 @@ def reserve_admin_usage(admin_id, operation, amount):
         conn.commit()
         return True, None
     except Exception:
-        return False, "Не удалось проверить лимит администратора."
+        return False, _l('Не удалось проверить лимит администратора.')
 
 
 def set_admin_limit(admin_id, kind, amount, changed_by):
@@ -1575,7 +1584,7 @@ def get_user_display_name(user_id, first_name=None):
 def get_user_mention(user_id, first_name=None):
     name = get_user_display_name(user_id, first_name)
     if name == f"ID:{int(user_id)}":
-        name = "Игрок"
+        name = _l('Игрок')
     return f'<a href="tg://user?id={int(user_id)}">{html.escape(str(name))}</a>'
 
 
@@ -1883,10 +1892,11 @@ def get_user_bank_total(user_id):
 
 
 @db_transaction
+@_localized
 def create_time_deposit(user_id, amount, days, is_locked=0):
     try:
         if amount <= 0:
-            return False, "Сумма должна быть больше 0!"
+            return False, _l('Сумма должна быть больше 0!')
         rate = TIME_DEPOSIT_RATES.get(days, 0.4)
         profit = int(amount * rate / 100)
         now = datetime.now()
@@ -1899,11 +1909,11 @@ def create_time_deposit(user_id, amount, days, is_locked=0):
         current_bank_total = get_user_bank_total(user_id)
         if current_bank_total + amount > BANK_MAX_LIMIT:
             max_can_add = max(0, BANK_MAX_LIMIT - current_bank_total)
-            return False, f"Превышен лимит банка (100kk mCoin)! Вы можете внести ещё максимум {format_number(max_can_add)} m¢."
+            return False, _lf('Превышен лимит банка (100kk mCoin)! Вы можете внести ещё максимум {0} m¢.', (_fmt(format_number(max_can_add), '', -1),))
 
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?", (amount, user_id, amount))
         if cursor.rowcount == 0:
-            return False, "Недостаточно средств на балансе!"
+            return False, _l('Недостаточно средств на балансе!')
 
         cursor.execute('''
             INSERT INTO time_deposits (user_id, amount, days, percent, profit, is_locked, status, created_at, end_at, created_at_dt, end_at_dt)
@@ -1973,21 +1983,22 @@ def get_user_time_deposits_history_count(user_id):
 
 
 @db_transaction
+@_localized
 def withdraw_time_deposit(dep_id, user_id):
     try:
         cursor.execute("SELECT amount, is_locked, status FROM time_deposits WHERE id = ? AND user_id = ?", (dep_id, user_id))
         row = cursor.fetchone()
         if not row:
-            return False, "Депозит не найден!"
+            return False, _l('Депозит не найден!')
         amount, is_locked, status = row
         if status != "active":
-            return False, "Депозит уже закрыт!"
+            return False, _l('Депозит уже закрыт!')
         if is_locked:
-            return False, "Снятие данного депозита было заблокировано при открытии!"
+            return False, _l('Снятие данного депозита было заблокировано при открытии!')
 
         cursor.execute("UPDATE time_deposits SET status = 'withdrawn' WHERE id = ? AND user_id = ? AND status = 'active' AND is_locked = 0", (dep_id, user_id))
         if cursor.rowcount == 0:
-            return False, "Депозит уже закрыт или заблокирован!"
+            return False, _l('Депозит уже закрыт или заблокирован!')
 
         cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         conn.commit()
@@ -1997,12 +2008,13 @@ def withdraw_time_deposit(dep_id, user_id):
 
 
 @db_transaction
+@_localized
 def withdraw_all_time_deposits(user_id):
     try:
         cursor.execute("SELECT id, amount, is_locked FROM time_deposits WHERE user_id = ? AND status = 'active' AND is_locked = 0", (user_id,))
         rows = cursor.fetchall()
         if not rows:
-            return False, "Нет доступных для досрочного снятия депозитов (или они заблокированы)!"
+            return False, _l('Нет доступных для досрочного снятия депозитов (или они заблокированы)!')
 
         total_withdrawn = 0
         for dep_id, amount, is_locked in rows:
@@ -2011,7 +2023,7 @@ def withdraw_all_time_deposits(user_id):
                 total_withdrawn += amount
 
         if total_withdrawn <= 0:
-            return False, "Нет доступных для досрочного снятия депозитов!"
+            return False, _l('Нет доступных для досрочного снятия депозитов!')
 
         cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_withdrawn, total_withdrawn, user_id))
         conn.commit()
@@ -2040,18 +2052,19 @@ def get_savings_account(user_id):
 
 
 @db_transaction
+@_localized
 def deposit_to_savings(user_id, amount):
     try:
         if amount <= 0:
-            return False, "Сумма должна быть больше 0!"
+            return False, _l('Сумма должна быть больше 0!')
         current_bank_total = get_user_bank_total(user_id)
         if current_bank_total + amount > BANK_MAX_LIMIT:
             max_can_add = max(0, BANK_MAX_LIMIT - current_bank_total)
-            return False, f"Превышен лимит банка (100kk mCoin)! Вы можете внести ещё максимум {format_number(max_can_add)} m¢."
+            return False, _lf('Превышен лимит банка (100kk mCoin)! Вы можете внести ещё максимум {0} m¢.', (_fmt(format_number(max_can_add), '', -1),))
 
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?", (amount, user_id, amount))
         if cursor.rowcount == 0:
-            return False, "Недостаточно средств на балансе!"
+            return False, _l('Недостаточно средств на балансе!')
 
         get_savings_account(user_id)
         cursor.execute("UPDATE savings_accounts SET balance = balance + ? WHERE user_id = ?", (amount, user_id))
@@ -2066,14 +2079,15 @@ def deposit_to_savings(user_id, amount):
 
 
 @db_transaction
+@_localized
 def withdraw_from_savings(user_id, amount):
     try:
         if amount <= 0:
-            return False, "Сумма должна быть больше 0!"
+            return False, _l('Сумма должна быть больше 0!')
         acc = get_savings_account(user_id)
         total_available = acc["balance"] + int(acc["accumulated_interest"])
         if total_available <= 0:
-            return False, "На накопительном счете нет средств!"
+            return False, _l('На накопительном счете нет средств!')
         if amount > total_available:
             amount = total_available
 
@@ -2088,7 +2102,7 @@ def withdraw_from_savings(user_id, amount):
             WHERE user_id = ? AND balance >= ?
         ''', (balance_to_wd, interest_to_wd, interest_to_wd, user_id, balance_to_wd))
         if cursor.rowcount == 0:
-            return False, "Недостаточно средств на накопительном счете!"
+            return False, _l('Недостаточно средств на накопительном счете!')
 
         cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         now_str = datetime.now().strftime("%d-%m-%y %H:%M")
@@ -2141,6 +2155,7 @@ def register_referral(referrer_id, referral_id):
         return False
 
 
+@_localized
 async def activate_referral_if_needed(user_id):
     try:
         cursor.execute("SELECT referrer_id, is_active FROM referrals WHERE referral_id = ?", (user_id,))
@@ -2157,9 +2172,7 @@ async def activate_referral_if_needed(user_id):
             name_val = get_user_display_name(user_id)
             user_link = f'<a href="tg://user?id={user_id}">{html.escape(name_val)}</a>'
             msg_text = (
-                f'🎁 <b>Реферальный бонус!</b>\n'
-                f'Твой друг {user_link} выполнил условие (сыграл игру или забрал бонус).\n'
-                f'Тебе начислено <b>100\'000 mCoin</b>!'
+                _lf("🎁 <b>Реферальный бонус!</b>\nТвой друг {0} выполнил условие (сыграл игру или забрал бонус).\nТебе начислено <b>100'000 mCoin</b>!", (_fmt(user_link, '', -1),), user_id=referrer_id)
             )
             await bot.send_message(chat_id=referrer_id, text=msg_text, parse_mode=ParseMode.HTML)
         except Exception:
@@ -2238,7 +2251,7 @@ def is_bot_command(text, chat_type="private"):
     
     command_triggers = [
         "мины", "м", "башня", "бш", "квак", "qwak", "frog", "лягушка", "игры", "игра", "баланс", "б", "бал",
-        "бонус", "топ", "дать", "пер", "раздача", "роздача",
+        "бонус", "топ", "дать", "пер", "раздача", "роздача", "giveaway", "transfer",
         "история", "недавние", "алмазы", "алмаз", "diamond",
         "золото", "gold", "голд", "з",
         "краш", "crash", "кр",
@@ -2272,6 +2285,7 @@ def is_bot_command(text, chat_type="private"):
 
 
 @dp.message.outer_middleware()
+@_localized
 async def save_username_middleware(handler, event, data):
     if event.from_user:
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
@@ -2283,13 +2297,11 @@ async def save_username_middleware(handler, event, data):
             msg_text = event.text or event.caption or ""
             
             if is_bot_command(msg_text, chat_type):
-                raw_user_name = get_user_display_name(event.from_user.id, event.from_user.first_name) or "Игрок"
+                raw_user_name = get_user_display_name(event.from_user.id, event.from_user.first_name) or _l('Игрок')
                 clean_user_name = html.escape(raw_user_name)
                 user_link = f'<a href="tg://user?id={event.from_user.id}">{clean_user_name}</a>'
                 await event.reply(
-                    f'<b>{user_link} ты заблокирован! 🚫\n</b>'
-                    f'<i>Причина: {ban_info["reason"]}\n</i>'
-                    f'<i>До: {ban_info["until_str"]}</i>',
+                    _lf('<b>{0} ты заблокирован! 🚫\n</b><i>Причина: {1}\n</i><i>До: {2}</i>', (_fmt(user_link, '', -1), _fmt(ban_info['reason'], '', -1), _fmt(_l('Навсегда') if ban_info.get('is_perm') else ban_info['until_str'], '', -1))),
                     parse_mode=ParseMode.HTML
                 )
             return
@@ -2301,6 +2313,7 @@ async def save_username_middleware(handler, event, data):
 
 
 @dp.callback_query.outer_middleware()
+@_localized
 async def save_username_cb_middleware(handler, event, data):
     if event.from_user:
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
@@ -2309,7 +2322,7 @@ async def save_username_cb_middleware(handler, event, data):
         ban_info = check_user_ban(event.from_user.id)
         if ban_info:
             await event.answer(
-                f'Ты заблокирован! 🚫\nПричина: {ban_info["reason"]}\nДо: {ban_info["until_str"]}',
+                _lf('Ты заблокирован! 🚫\nПричина: {0}\nДо: {1}', (_fmt(ban_info['reason'], '', -1), _fmt(_l('Навсегда') if ban_info.get('is_perm') else ban_info['until_str'], '', -1))),
                 show_alert=True
             )
             return
@@ -2969,6 +2982,7 @@ async def get_chat_members(chat_id):
         return []
 
 
+@_localized
 async def check_expired_games_task():
     while True:
         try:
@@ -2992,8 +3006,8 @@ async def check_expired_games_task():
                 uid = gdata["owner_id"]
                 bet = gdata.get("bet", 0)
                 gtype = gdata.get("type", "mines")
-                name_map = {"mines": "мины", "tower": "башня", "qwak": "квак", "scratch": "скретч", "diamonds": "алмазы", "twentyone": "21", "gold": "золото"}
-                game_title = name_map.get(gtype, "мины")
+                name_map = {"mines": _l('мины', user_id=uid), "tower": _l('башня', user_id=uid), "qwak": _l('квак', user_id=uid), "scratch": _l('скретч', user_id=uid), "diamonds": _l('алмазы', user_id=uid), "twentyone": "21", "gold": _l('золото', user_id=uid)}
+                game_title = name_map.get(gtype, _l('мины', user_id=uid))
 
                 if not gdata.get("demo_mode", False) and not is_demo_user(uid):
                     udata = get_user(uid)
@@ -3005,8 +3019,7 @@ async def check_expired_games_task():
                 remove_active_game_from_db(gid)
 
                 msg_text = (
-                    f'💾 Игра «{game_title}», начавшаяся {dt_str}, была завершена из-за бездействия. '
-                    f'<b>{format_number(bet)} mCoin были возвращены на баланс.</b>'
+                    _lf('💾 Игра «{0}», начавшаяся {1}, была завершена из-за бездействия. <b>{2} mCoin были возвращены на баланс.</b>', (_fmt(_label(game_title, user_id=uid), '', -1), _fmt(dt_str, '', -1), _fmt(format_number(bet), '', -1)), user_id=uid)
                 )
 
                 try:
@@ -3022,9 +3035,10 @@ async def check_expired_games_task():
         await asyncio.sleep(60)
 
 
+@_localized
 async def show_catalog(message_or_callback, user_id, user_name, chat_id, is_group=False, edit=False):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
@@ -3100,9 +3114,10 @@ async def show_catalog(message_or_callback, user_id, user_name, chat_id, is_grou
         _remember_message(user_messages, key, msg.message_id)
 
 
+@_localized
 async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
@@ -3114,27 +3129,27 @@ async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_n
 
     keyboard_buttons = [
         [
-            InlineKeyboardButton(text="🎰 Слоты", callback_data="info_slots", style="primary"),
-            InlineKeyboardButton(text="🧰 Сундук", callback_data="info_chest", style="primary")
+            InlineKeyboardButton(text=_l('🎰 Слоты'), callback_data="info_slots", style="primary"),
+            InlineKeyboardButton(text=_l('🧰 Сундук'), callback_data="info_chest", style="primary")
         ],
         [
-            InlineKeyboardButton(text="🪙 Монетка", callback_data="info_coin", style="primary"),
-            InlineKeyboardButton(text="🎲 Кубик", callback_data="info_dice", style="primary")
+            InlineKeyboardButton(text=_l('🪙 Монетка'), callback_data="info_coin", style="primary"),
+            InlineKeyboardButton(text=_l('🎲 Кубик'), callback_data="info_dice", style="primary")
         ],
         [
-            InlineKeyboardButton(text="🎳 Боулинг", callback_data="info_bowling", style="primary"),
-            InlineKeyboardButton(text="🎯 Дартс", callback_data="info_darts", style="primary")
+            InlineKeyboardButton(text=_l('🎳 Боулинг'), callback_data="info_bowling", style="primary"),
+            InlineKeyboardButton(text=_l('🎯 Дартс'), callback_data="info_darts", style="primary")
         ],
         [
-            InlineKeyboardButton(text="🏀 Баскетбол", callback_data="info_basketball", style="primary"),
-            InlineKeyboardButton(text="⚽ Футбол", callback_data="info_football", style="primary")
+            InlineKeyboardButton(text=_l('🏀 Баскетбол'), callback_data="info_basketball", style="primary"),
+            InlineKeyboardButton(text=_l('⚽ Футбол'), callback_data="info_football", style="primary")
         ],
         [
-            InlineKeyboardButton(text="🚀 Краш", callback_data="info_crash", style="primary"),
-            InlineKeyboardButton(text="🎣 Рыбалка", callback_data="info_fishing", style="primary")
+            InlineKeyboardButton(text=_l('🚀 Краш'), callback_data="info_crash", style="primary"),
+            InlineKeyboardButton(text=_l('🎣 Рыбалка'), callback_data="info_fishing", style="primary")
         ],
         [
-            InlineKeyboardButton(text="🎫 Скретч", callback_data="info_scratch", style="primary")
+            InlineKeyboardButton(text=_l('🎫 Скретч'), callback_data="info_scratch", style="primary")
         ],
         [
             InlineKeyboardButton(text=tr(user_id, "settings_back"), callback_data="catalog_main", icon_custom_emoji_id="5255703720078879038")
@@ -3165,9 +3180,10 @@ async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_n
         _remember_message(user_messages, key, msg.message_id)
 
 
+@_localized
 async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
@@ -3180,26 +3196,26 @@ async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_
     keyboard_buttons = [
         [
             InlineKeyboardButton(
-                text="Мины",
+                text=_l('Мины'),
                 callback_data="mines",
                 style="primary",
                 icon_custom_emoji_id="5469654973308476699"
             ),
             InlineKeyboardButton(
-                text="🛕 Башня",
+                text=_l('🛕 Башня'),
                 callback_data="tower",
                 style="primary"
             )
         ],
         [
             InlineKeyboardButton(
-                text="Квак",
+                text=_l('Квак'),
                 callback_data="qwak",
                 style="primary",
                 icon_custom_emoji_id=QWAK_PAD_EMOJI_ID
             ),
             InlineKeyboardButton(
-                text="Алмазы",
+                text=_l('Алмазы'),
                 callback_data="diamonds",
                 style="primary",
                 icon_custom_emoji_id="5307594157739515229"
@@ -3207,12 +3223,12 @@ async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_
         ],
         [
             InlineKeyboardButton(
-                text="🃏 21 (Очко)",
+                text=_l('🃏 21 (Очко)'),
                 callback_data="info_twentyone",
                 style="primary"
             ),
             InlineKeyboardButton(
-                text="🌼 Золото",
+                text=_l('🌼 Золото'),
                 callback_data="gold",
                 style="primary",
                 icon_custom_emoji_id="5370731117588523522"
@@ -3220,7 +3236,7 @@ async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_
         ],
         [
             InlineKeyboardButton(
-                text="🎱 Рулетка",
+                text=_l('🎱 Рулетка'),
                 callback_data="info_roulette",
                 style="primary"
             )
@@ -3270,12 +3286,13 @@ async def _get_top_identity(user_id, settings):
     try:
         user = await bot.get_chat(user_id)
         save_username(user_id, user.username, user.first_name)
-        return user.first_name or "Пользователь", user.username
+        return user.first_name or _l('Пользователь'), user.username
     except Exception:
-        name = "Пользователь" if settings.get("hide_top_username") else get_user_display_name(user_id)
+        name = _l('Пользователь') if settings.get("hide_top_username") else get_user_display_name(user_id)
         return name, None
 
 
+@_localized
 async def show_top(message, chat_id=None):
     user_id = message.from_user.id
 
@@ -3352,16 +3369,14 @@ def get_active_unplayed_games(user_id):
     return sorted(result, key=lambda x: x[0], reverse=True)
 
 
+@_localized
 async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1):
     user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '🕓 <b>НЕДАВНИЕ ИГРЫ</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote>ℹ️ Вы можете просмотреть свои недавние игры и продолжить запущенные. Если вы запускали игру более 12 часов назад, она завершилась, и ставка была возвращена на ваш баланс.</blockquote>'
+        _lf('{0}\n🕓 <b>НЕДАВНИЕ ИГРЫ</b>\n<code>·····················</code>\n<blockquote>ℹ️ Вы можете просмотреть свои недавние игры и продолжить запущенные. Если вы запускали игру более 12 часов назад, она завершилась, и ставка была возвращена на ваш баланс.</blockquote>', (_fmt(user_link, '', -1),))
     )
 
     unplayed = get_active_unplayed_games(user_id)
@@ -3378,18 +3393,18 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
     keyboard_rows = []
 
     type_names = {
-        "mines": "Мины",
-        "tower": "Башня",
-        "qwak": "Квак",
-        "scratch": "Скретч",
-        "diamonds": "Алмазы",
-        "twentyone": "21 (Очко)",
-        "gold": "Золото"
+        "mines": _l('Мины'),
+        "tower": _l('Башня'),
+        "qwak": _l('Квак'),
+        "scratch": _l('Скретч'),
+        "diamonds": _l('Алмазы'),
+        "twentyone": _l('21 (Очко)'),
+        "gold": _l('Золото')
     }
 
     for gid, gdata in page_games:
         gtype = gdata.get("type", "mines")
-        gname = type_names.get(gtype, "Мины")
+        gname = type_names.get(gtype, _l('Мины'))
         bet_str = format_number(gdata.get("bet", 10))
         btn_text = f"{gname} • {bet_str} mCoin"
         keyboard_rows.append([
@@ -3412,13 +3427,13 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
 
     keyboard_rows.append([
         InlineKeyboardButton(
-            text="История игр",
+            text=_l('История игр'),
             callback_data="history_games_1",
             style="primary",
             icon_custom_emoji_id="5309815458990433715"
         ),
         InlineKeyboardButton(
-            text="Статистика",
+            text=_l('Статистика'),
             callback_data="history_stats",
             style="primary",
             icon_custom_emoji_id="5431577498364158238"
@@ -3453,11 +3468,13 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
 
 @dp.message(Command("history", "история"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"]))
+@_localized
 async def cmd_history(message: types.Message):
     await show_recent_games_menu(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), page=1)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("recent_page_")))
+@_localized
 async def process_recent_page(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -3468,53 +3485,31 @@ async def process_recent_page(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "back_to_history_menu"))
+@_localized
 async def process_back_to_history_menu(callback: types.CallbackQuery):
     await callback.answer()
     await show_recent_games_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=1)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "history_stats"))
+@_localized
 async def process_history_stats(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     stats = get_user_stats(user_id)
 
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>СТАТИСТИКА ПО ИГРАМ</b>\n'
-        f'<code>·····················</code>\n'
-        f'<blockquote expandable>\n'
-        f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> Мины: {stats["mines"]}\n'
-        f'<tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji> Краш: {stats["crash"]}\n'
-        f'🛕 Башня: {stats["tower"]}\n'
-        f'🐸 Квак: {stats.get("qwak", 0)}\n'
-        f'💠 Алмазы: {stats["diamonds"]}\n'
-        f'🌼 Золото: {stats.get("gold", 0)}\n'
-        f'🎰 Слоты: {stats.get("slots", 0)}\n'
-        f'🎳 Боулинг: {stats.get("bowling", 0)}\n'
-        f'🎲 Кубик: {stats.get("dice", 0)}\n'
-        f'🪙 Монетка: {stats.get("coin", 0)}\n'
-        f'🧰 Сундук: {stats.get("chest", 0)}\n'
-        f'🎣 Рыбалка: {stats.get("fishing", 0)}\n'
-        f'🎫 Скретч: {stats.get("scratch", 0)}\n'
-        f'🎱 Рулетка: {stats.get("roulette", 0)}\n'
-        f'🎯 Дартс: {stats.get("darts", 0)}\n'
-        f'🏀 Баскетбол: {stats.get("basketball", 0)}\n'
-        f'⚽ Футбол: {stats.get("football", 0)}\n'
-        f'🃏 21 (Очко): {stats.get("twentyone", 0)}\n'
-        f'<code>·····················</code>\n'
-        f'🕹 Сыграно: {stats["total"]} игр\n'
-        f'</blockquote>'
+        _lf('{0}\n<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>СТАТИСТИКА ПО ИГРАМ</b>\n<code>·····················</code>\n<blockquote expandable>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> Мины: {1}\n<tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji> Краш: {2}\n🛕 Башня: {3}\n🐸 Квак: {4}\n💠 Алмазы: {5}\n🌼 Золото: {6}\n🎰 Слоты: {7}\n🎳 Боулинг: {8}\n🎲 Кубик: {9}\n🪙 Монетка: {10}\n🧰 Сундук: {11}\n🎣 Рыбалка: {12}\n🎫 Скретч: {13}\n🎱 Рулетка: {14}\n🎯 Дартс: {15}\n🏀 Баскетбол: {16}\n⚽ Футбол: {17}\n🃏 21 (Очко): {18}\n<code>·····················</code>\n🕹 Сыграно: {19} игр\n</blockquote>', (_fmt(user_link, '', -1), _fmt(stats['mines'], '', -1), _fmt(stats['crash'], '', -1), _fmt(stats['tower'], '', -1), _fmt(stats.get('qwak', 0), '', -1), _fmt(stats['diamonds'], '', -1), _fmt(stats.get('gold', 0), '', -1), _fmt(stats.get('slots', 0), '', -1), _fmt(stats.get('bowling', 0), '', -1), _fmt(stats.get('dice', 0), '', -1), _fmt(stats.get('coin', 0), '', -1), _fmt(stats.get('chest', 0), '', -1), _fmt(stats.get('fishing', 0), '', -1), _fmt(stats.get('scratch', 0), '', -1), _fmt(stats.get('roulette', 0), '', -1), _fmt(stats.get('darts', 0), '', -1), _fmt(stats.get('basketball', 0), '', -1), _fmt(stats.get('football', 0), '', -1), _fmt(stats.get('twentyone', 0), '', -1), _fmt(stats['total'], '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data="back_to_history_menu",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -3539,6 +3534,7 @@ async def process_history_stats(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("history_games_")))
+@_localized
 async def process_history_games(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -3547,7 +3543,7 @@ async def process_history_games(callback: types.CallbackQuery):
         page = 1
 
     user_id = callback.from_user.id
-    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     total_count = get_user_history_count(user_id)
@@ -3562,48 +3558,48 @@ async def process_history_games(callback: types.CallbackQuery):
     rows = get_user_history(user_id, limit=per_page, offset=offset)
 
     type_info = {
-        "mines": ("💣", "Мины"),
-        "tower": ("🛕", "Башня"),
-        "qwak": ("🐸", "Квак"),
-        "diamonds": ("💠", "Алмазы"),
-        "gold": ("🌼", "Золото"),
-        "crash": ("🚀", "Краш"),
-        "slots": ("🎰", "Слоты"),
-        "bowling": ("🎳", "Боулинг"),
-        "dice": ("🎲", "Кубик"),
-        "coin": ("🪙", "Монетка"),
-        "chest": ("🧰", "Сундук"),
-        "fishing": ("🎣", "Рыбалка"),
-        "scratch": ("🎫", "Скретч"),
-        "roulette": ("🎱", "Рулетка"),
-        "darts": ("🎯", "Дартс"),
-        "basketball": ("🏀", "Баскетбол"),
-        "football": ("⚽", "Футбол"),
-        "twentyone": ("🃏", "21 (Очко)")
+        "mines": ("💣", _l('Мины')),
+        "tower": ("🛕", _l('Башня')),
+        "qwak": ("🐸", _l('Квак')),
+        "diamonds": ("💠", _l('Алмазы')),
+        "gold": ("🌼", _l('Золото')),
+        "crash": ("🚀", _l('Краш')),
+        "slots": ("🎰", _l('Слоты')),
+        "bowling": ("🎳", _l('Боулинг')),
+        "dice": ("🎲", _l('Кубик')),
+        "coin": ("🪙", _l('Монетка')),
+        "chest": ("🧰", _l('Сундук')),
+        "fishing": ("🎣", _l('Рыбалка')),
+        "scratch": ("🎫", _l('Скретч')),
+        "roulette": ("🎱", _l('Рулетка')),
+        "darts": ("🎯", _l('Дартс')),
+        "basketball": ("🏀", _l('Баскетбол')),
+        "football": ("⚽", _l('Футбол')),
+        "twentyone": ("🃏", _l('21 (Очко)'))
     }
 
-    text = f'{user_link}\n🕓 <b>История игр:</b>\n\n'
+    text = _lf('{0}\n🕓 <b>История игр:</b>\n\n', (_fmt(user_link, '', -1),))
 
     if not rows:
-        text += "<i>История игр пуста. Сыграйте в любую игру!</i>\n\n"
+        text += _l('<i>История игр пуста. Сыграйте в любую игру!</i>\n\n')
     else:
         for idx, (gtype, bet, result, win_amount, dt_str) in enumerate(rows):
-            icon, name = type_info.get(gtype, ("🎮", "Игра"))
+            icon, name = type_info.get(gtype, ("🎮", _l('Игра')))
             text += f'{icon} <b>{name}:</b> {dt_str}\n'
-            text += f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
+            text += _lf('💸 <b>Ставка:</b> {0} m¢\n', (_fmt(format_number(bet), '', -1),))
             if result == "win":
-                text += f'✅ <b>Выигрыш:</b> {format_number(win_amount)} m¢\n'
+                text += _lf('✅ <b>Выигрыш:</b> {0} m¢\n', (_fmt(format_number(win_amount), '', -1),))
             elif result == "draw":
-                text += f'🤝 <b>Ничья (возврат):</b> {format_number(win_amount)} m¢\n'
+                text += _lf('🤝 <b>Ничья (возврат):</b> {0} m¢\n', (_fmt(format_number(win_amount), '', -1),))
             elif result == "expired":
-                text += '💾 <b>Игра отменена (бездействие)</b>\n'
+                text += _l('💾 <b>Игра отменена (бездействие)</b>\n')
             else:
-                text += '❌ <b>Игра проиграна!</b>\n'
+                text += _l('❌ <b>Игра проиграна!</b>\n')
             
             if idx < len(rows) - 1:
                 text += '<code>·····················</code>\n'
 
-        text += f'\n↗️ <i>Страница {page}/{total_pages}</i>'
+        text += _lf('\n↗️ <i>Страница {0}/{1}</i>', (_fmt(page, '', -1), _fmt(total_pages, '', -1)))
 
     keyboard_rows = []
     nav_buttons = []
@@ -3622,7 +3618,7 @@ async def process_history_games(callback: types.CallbackQuery):
 
     keyboard_rows.append([
         InlineKeyboardButton(
-            text="Назад",
+            text=_l('Назад'),
             callback_data="back_to_history_menu",
             icon_custom_emoji_id="5255703720078879038"
         )
@@ -3647,25 +3643,26 @@ async def process_history_games(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("resume_game_")))
+@_localized
 async def process_resume_game(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка игры!", show_alert=True)
+        await callback.answer(_l('Ошибка игры!'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("settled", False) or game.get("expired", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     active_games[user_id] = game_id
@@ -3696,7 +3693,7 @@ async def process_resume_game(callback: types.CallbackQuery):
     elif gtype == "gold":
         await show_gold_grid_from_message(callback, user_id, game_id)
     else:
-        await callback.answer("Неизвестный тип игры!", show_alert=True)
+        await callback.answer(_l('Неизвестный тип игры!'), show_alert=True)
 
 
 CHECKS_ACCESS_PRICE = 100000
@@ -3723,37 +3720,33 @@ def make_check_code():
             return code
 
 
+@_localized
 async def show_checks_menu(message_or_callback, user_id, edit=False):
     chat = message_or_callback.message.chat if isinstance(message_or_callback, types.CallbackQuery) else message_or_callback.chat
     if chat.type != "private":
         if isinstance(message_or_callback, types.CallbackQuery):
-            await message_or_callback.answer("Раздел чеков работает только в личке.", show_alert=True)
+            await message_or_callback.answer(_l('Раздел чеков работает только в личке.'), show_alert=True)
         else:
-            await message_or_callback.answer("<i>Раздел чеков работает только в личных сообщениях!</i>", parse_mode=ParseMode.HTML)
+            await message_or_callback.answer(_l('<i>Раздел чеков работает только в личных сообщениях!</i>'), parse_mode=ParseMode.HTML)
         return
 
     access = has_checks_access(user_id)
     if access:
         text = (
-            '<b>🧾 РАЗДЕЛ ЧЕКОВ</b>\n'
-            '<code>·····················</code>\n'
-            '<i>Доступ куплен навсегда. Создай чек на сумму за одну активацию и укажи количество получателей.</i>\n\n'
-            '<code>/check 100к 5</code> — чек по 100 000 mCoin для 5 человек.'
+            _l('<b>🧾 РАЗДЕЛ ЧЕКОВ</b>\n<code>·····················</code>\n<i>Доступ куплен навсегда. Создай чек на сумму за одну активацию и укажи количество получателей.</i>\n\n<code>/check 100к 5</code> — чек по 100 000 mCoin для 5 человек.')
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="➕ Создать чек", callback_data="checks_create_help", style="success")],
-            [InlineKeyboardButton(text="📋 Мои чеки", callback_data="checks_mine", style="primary")],
-            [InlineKeyboardButton(text="Назад", callback_data="checks_back")],
+            [InlineKeyboardButton(text=_l('➕ Создать чек'), callback_data="checks_create_help", style="success")],
+            [InlineKeyboardButton(text=_l('📋 Мои чеки'), callback_data="checks_mine", style="primary")],
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="checks_back")],
         ])
     else:
         text = (
-            '<b>🧾 РАЗДЕЛ ЧЕКОВ</b>\n'
-            '<code>·····················</code>\n'
-            f'<i>Откройте раздел за <b>{format_number(CHECKS_ACCESS_PRICE)} mCoin</b> один раз — доступ останется навсегда.</i>'
+            _lf('<b>🧾 РАЗДЕЛ ЧЕКОВ</b>\n<code>·····················</code>\n<i>Откройте раздел за <b>{0} mCoin</b> один раз — доступ останется навсегда.</i>', (_fmt(format_number(CHECKS_ACCESS_PRICE), '', -1),))
         )
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🔓 Открыть за 100к", callback_data="checks_buy", style="success")],
-            [InlineKeyboardButton(text="Назад", callback_data="checks_back")],
+            [InlineKeyboardButton(text=_l('🔓 Открыть за 100к'), callback_data="checks_buy", style="success")],
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="checks_back")],
         ])
 
     if isinstance(message_or_callback, types.Message):
@@ -3767,10 +3760,11 @@ async def show_checks_menu(message_or_callback, user_id, edit=False):
         await message_or_callback.message.answer(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
 
 
+@_localized
 async def activate_mcoin_check(message, code):
     user_id = message.from_user.id
     if message.chat.type != "private":
-        await message.answer("<i>Активация чеков работает только в личных сообщениях!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Активация чеков работает только в личных сообщениях!</i>'), parse_mode=ParseMode.HTML)
         return
     code = (code or "").strip()
     try:
@@ -3780,15 +3774,15 @@ async def activate_mcoin_check(message, code):
         ''', (code,))
         row = cursor.fetchone()
         if not row or not row[3] or int(row[2] or 0) <= 0:
-            await message.answer("<i>Чек не найден или уже полностью активирован.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Чек не найден или уже полностью активирован.</i>'), parse_mode=ParseMode.HTML)
             return
         creator_id, amount, remaining, _ = row
         if int(creator_id) == user_id:
-            await message.answer("<i>Нельзя активировать собственный чек.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Нельзя активировать собственный чек.</i>'), parse_mode=ParseMode.HTML)
             return
         cursor.execute("SELECT 1 FROM check_activations WHERE check_code = ? AND user_id = ?", (code, user_id))
         if cursor.fetchone():
-            await message.answer("<i>Вы уже активировали этот чек.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Вы уже активировали этот чек.</i>'), parse_mode=ParseMode.HTML)
             return
 
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -3805,9 +3799,7 @@ async def activate_mcoin_check(message, code):
         cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (int(amount), user_id))
         conn.commit()
         await message.answer(
-            f"<i>✅ Чек активирован!\n"
-            f"Начислено: <b>{format_number(amount)} mCoin</b>\n"
-            f"Осталось активаций: <b>{new_remaining}</b></i>",
+            _lf('<i>✅ Чек активирован!\nНачислено: <b>{0} mCoin</b>\nОсталось активаций: <b>{1}</b></i>', (_fmt(format_number(amount), '', -1), _fmt(new_remaining, '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception as exc:
@@ -3815,14 +3807,15 @@ async def activate_mcoin_check(message, code):
             conn.rollback()
         except Exception:
             pass
-        await message.answer(f"<i>Не удалось активировать чек: {html.escape(str(exc))}</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Не удалось активировать чек: {0}</i>', (_fmt(html.escape(str(exc)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("check", "checks", "чек", "чеки"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r"^(?:чек|чеки|check|checks)(?:\s|$)", message.text.strip(), re.IGNORECASE)))
+@_localized
 async def cmd_checks(message: types.Message):
     if message.chat.type != "private":
-        await message.answer("<i>Раздел чеков работает только в личных сообщениях!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Раздел чеков работает только в личных сообщениях!</i>'), parse_mode=ParseMode.HTML)
         return
     args = (message.text or "").strip().split()[1:]
     if not args:
@@ -3832,18 +3825,18 @@ async def cmd_checks(message: types.Message):
         await show_checks_menu(message, message.from_user.id)
         return
     if len(args) > 2:
-        await message.answer("<i>Использование: <code>/check 100к 5</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: <code>/check 100к 5</code></i>'), parse_mode=ParseMode.HTML)
         return
     amount = parse_amount(args[0])
     activations = int(args[1]) if len(args) == 2 and args[1].isdigit() else 1
     if amount is None or amount <= 0 or amount > CHECK_MAX_AMOUNT or activations < 1 or activations > CHECK_MAX_ACTIVATIONS:
-        await message.answer("<i>Сумма одной активации должна быть от 1 до <b>10kk mCoin</b>. Пример: <code>/check 100к 5</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Сумма одной активации должна быть от 1 до <b>10kk mCoin</b>. Пример: <code>/check 100к 5</code></i>'), parse_mode=ParseMode.HTML)
         return
     total = int(amount) * activations
     user_data = get_user(message.from_user.id)
     if user_data["balance"] < total:
         await message.answer(
-            f"<i>Недостаточно средств. Нужно зарезервировать <b>{format_number(total)} mCoin</b>.</i>",
+            _lf('<i>Недостаточно средств. Нужно зарезервировать <b>{0} mCoin</b>.</i>', (_fmt(format_number(total), '', -1),)),
             parse_mode=ParseMode.HTML
         )
         return
@@ -3859,14 +3852,10 @@ async def cmd_checks(message: types.Message):
         conn.commit()
         link = f"https://t.me/{BOT_USERNAME}?start=check_{code}"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🎁 Активировать чек", url=link)]
+            [InlineKeyboardButton(text=_l('🎁 Активировать чек'), url=link)]
         ])
         await message.answer(
-            f"<b>🧾 Чек создан!</b>\n"
-            f"Сумма за активацию: <b>{format_number(amount)} mCoin</b>\n"
-            f"Активаций: <b>{activations}</b>\n"
-            f"Зарезервировано: <b>{format_number(total)} mCoin</b>\n\n"
-            f"Ссылка: <code>{html.escape(link)}</code>",
+            _lf('<b>🧾 Чек создан!</b>\nСумма за активацию: <b>{0} mCoin</b>\nАктиваций: <b>{1}</b>\nЗарезервировано: <b>{2} mCoin</b>\n\nСсылка: <code>{3}</code>', (_fmt(format_number(amount), '', -1), _fmt(activations, '', -1), _fmt(format_number(total), '', -1), _fmt(html.escape(link), '', -1))),
             parse_mode=ParseMode.HTML,
             reply_markup=keyboard
         )
@@ -3875,19 +3864,21 @@ async def cmd_checks(message: types.Message):
             conn.rollback()
         except Exception:
             pass
-        await message.answer(f"<i>Не удалось создать чек: {html.escape(str(exc))}</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Не удалось создать чек: {0}</i>', (_fmt(html.escape(str(exc)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "checks_menu"))
+@_localized
 async def process_checks_menu(callback: types.CallbackQuery):
     await callback.answer()
     await show_checks_menu(callback, callback.from_user.id, edit=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "checks_buy"))
+@_localized
 async def process_checks_buy(callback: types.CallbackQuery):
     if callback.message.chat.type != "private":
-        await callback.answer("Раздел чеков работает только в личке.", show_alert=True)
+        await callback.answer(_l('Раздел чеков работает только в личке.'), show_alert=True)
         return
     user_id = callback.from_user.id
     if has_checks_access(user_id):
@@ -3895,7 +3886,7 @@ async def process_checks_buy(callback: types.CallbackQuery):
         return
     user_data = get_user(user_id)
     if user_data["balance"] < CHECKS_ACCESS_PRICE:
-        await callback.answer("Недостаточно mCoin для покупки доступа.", show_alert=True)
+        await callback.answer(_l('Недостаточно mCoin для покупки доступа.'), show_alert=True)
         return
     try:
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ?", (CHECKS_ACCESS_PRICE, user_id))
@@ -3904,33 +3895,31 @@ async def process_checks_buy(callback: types.CallbackQuery):
             (user_id, datetime.now().strftime("%d.%m.%Y %H:%M:%S"))
         )
         conn.commit()
-        await callback.answer("Раздел чеков открыт навсегда!")
+        await callback.answer(_l('Раздел чеков открыт навсегда!'))
         await show_checks_menu(callback, user_id, edit=True)
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
-        await callback.answer("Ошибка при покупке доступа.", show_alert=True)
+        await callback.answer(_l('Ошибка при покупке доступа.'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "checks_create_help"))
+@_localized
 async def process_checks_create_help(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.edit_text(
-        '<b>➕ Создание чека</b>\n\n'
-        'Отправь команду в личку:\n'
-        '<code>/check сумма количество</code>\n\n'
-        'Например: <code>/check 100к 5</code>\n'
-        '<i>С баланса сразу резервируется сумма всех активаций.</i>',
+        _l('<b>➕ Создание чека</b>\n\nОтправь команду в личку:\n<code>/check сумма количество</code>\n\nНапример: <code>/check 100к 5</code>\n<i>С баланса сразу резервируется сумма всех активаций.</i>'),
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="checks_menu")]
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="checks_menu")]
         ])
     )
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "checks_mine"))
+@_localized
 async def process_checks_mine(callback: types.CallbackQuery):
     await callback.answer()
     if callback.message.chat.type != "private":
@@ -3941,37 +3930,36 @@ async def process_checks_mine(callback: types.CallbackQuery):
     ''', (callback.from_user.id,))
     rows = cursor.fetchall()
     if not rows:
-        text = '<i>У вас пока нет созданных чеков.</i>'
+        text = _l('<i>У вас пока нет созданных чеков.</i>')
     else:
-        lines = ['<b>📋 Ваши чеки:</b>']
+        lines = [_l('<b>📋 Ваши чеки:</b>')]
         for code, amount, remaining, total in rows:
-            status = "активен" if int(remaining or 0) > 0 else "завершён"
+            status = _l('активен') if int(remaining or 0) > 0 else _l('завершён')
             lines.append(f"• <code>{html.escape(str(code))}</code> — {format_number(amount)} m¢, {remaining}/{total}, {status}")
         text = "\n".join(lines)
     await callback.message.edit_text(
         text,
         parse_mode=ParseMode.HTML,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="checks_menu")]
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="checks_menu")]
         ])
     )
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "checks_back"))
+@_localized
 async def process_checks_back(callback: types.CallbackQuery):
     await callback.answer()
     if callback.message.chat.type != "private":
         return
     try:
         await callback.message.edit_text(
-            '<b>Привет! <tg-emoji emoji-id="5350612670435313545">👋</tg-emoji> Ты в Мины Бот — место, где время летит незаметно!</b>\n\n'
-            '🎮 Много бесплатных игр без скачивания, прямо в Telegram.\n\n'
-            'Соревнуйся с друзьями и прокачивай свои каналы и чаты. 🏆',
+            _l('<b>Привет! <tg-emoji emoji-id="5350612670435313545">👋</tg-emoji> Ты в Мины Бот — место, где время летит незаметно!</b>\n\n🎮 Много бесплатных игр без скачивания, прямо в Telegram.\n\nСоревнуйся с друзьями и прокачивай свои каналы и чаты. 🏆'),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="Играть", callback_data="play", style="success", icon_custom_emoji_id="5350612670435313545")],
-                [InlineKeyboardButton(text="🧾 Чеки", callback_data="checks_menu", style="primary")],
-                [InlineKeyboardButton(text="Добавить бота в чат", url=f"https://t.me/{BOT_USERNAME}?startgroup=start", style="primary", icon_custom_emoji_id="5393194986252542669")],
+                [InlineKeyboardButton(text=_l('Играть'), callback_data="play", style="success", icon_custom_emoji_id="5350612670435313545")],
+                [InlineKeyboardButton(text=_l('🧾 Чеки'), callback_data="checks_menu", style="primary")],
+                [InlineKeyboardButton(text=_l('Добавить бота в чат'), url=f"https://t.me/{BOT_USERNAME}?startgroup=start", style="primary", icon_custom_emoji_id="5393194986252542669")],
             ])
         )
     except Exception:
@@ -3980,9 +3968,10 @@ async def process_checks_back(callback: types.CallbackQuery):
 
 
 @dp.message(Command("start"))
+@_localized
 async def cmd_start(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
-        await message.answer("<i>Эта команда работает только в личных сообщениях!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Эта команда работает только в личных сообщениях!</i>'), parse_mode=ParseMode.HTML)
         return
 
     user_id = message.from_user.id
@@ -4064,22 +4053,23 @@ async def cmd_start(message: types.Message):
 
 
 @dp.message(Command("add"))
+@_localized
 async def cmd_add(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS or not admin_has_permission(user_id, "issue"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split(maxsplit=1)
 
     if len(args) < 2:
-        await message.answer("<i>Использование: /add [сумма]\nИли в ответ на сообщение пользователя: /add [сумма]</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /add [сумма]\nИли в ответ на сообщение пользователя: /add [сумма]</i>'), parse_mode=ParseMode.HTML)
         return
 
     amount = parse_amount(args[1])
     if amount is None or amount < 0:
-        await message.answer("<i>Неверная сумма! Пример: 100, 1.4кк, 120кк</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверная сумма! Пример: 100, 1.4кк, 120кк</i>'), parse_mode=ParseMode.HTML)
         return
 
     if message.reply_to_message:
@@ -4087,42 +4077,42 @@ async def cmd_add(message: types.Message):
         target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     else:
         target_user_id = user_id
-        target_name = "ваш"
+        target_name = None
 
     user_data = get_user(target_user_id)
     allowed, limit_error = reserve_admin_usage(user_id, "issue", amount)
     if not allowed:
-        await message.reply(f"<i>{html.escape(limit_error or 'Операция запрещена.')}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>{0}</i>', (_fmt(html.escape(limit_error or _l('Операция запрещена.')), '', -1),)), parse_mode=ParseMode.HTML)
         return
     new_balance = user_data["balance"] + amount
 
     if update_user(target_user_id, balance=new_balance):
         await message.reply(
-            f'<i>✅ Successfully! На баланс пользователя {html.escape(get_user_display_name(target_user_id, target_name) if target_name != "ваш" else target_name)} добавлено {format_number(amount)} mCoin\n'
-            f'Текущий баланс: {format_number(new_balance)} mCoin</i>',
+            _lf('<i>✅ Successfully! На баланс пользователя {0} добавлено {1} mCoin\nТекущий баланс: {2} mCoin</i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(new_balance), '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply("<i>Ошибка базы данных!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("set"))
+@_localized
 async def cmd_set(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS or not admin_has_permission(user_id, "set"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split(maxsplit=1)
 
     if len(args) < 2:
-        await message.answer("<i>Использование: /set [сумма]\nИли в ответ на сообщение пользователя: /set [сумма]</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /set [сумма]\nИли в ответ на сообщение пользователя: /set [сумма]</i>'), parse_mode=ParseMode.HTML)
         return
 
     amount = parse_amount(args[1])
     if amount is None or amount < 0:
-        await message.answer("<i>Неверная сумма! Пример: 100, 1.4кк, 120кк</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверная сумма! Пример: 100, 1.4кк, 120кк</i>'), parse_mode=ParseMode.HTML)
         return
 
     if message.reply_to_message:
@@ -4130,42 +4120,44 @@ async def cmd_set(message: types.Message):
         target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     else:
         target_user_id = user_id
-        target_name = "ваш"
+        target_name = None
 
     target_data = get_user(target_user_id)
     increase = max(0, int(amount) - int(target_data.get("balance", 0) or 0))
     allowed, limit_error = reserve_admin_usage(user_id, "issue", increase)
     if not allowed:
-        await message.reply(f"<i>{html.escape(limit_error or 'Операция запрещена.')}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>{0}</i>', (_fmt(html.escape(limit_error or _l('Операция запрещена.')), '', -1),)), parse_mode=ParseMode.HTML)
         return
     if update_user(target_user_id, balance=amount):
         user_data = get_user(target_user_id)
         await message.reply(
-            f'<i>✅ Successfully! Баланс пользователя {html.escape(get_user_display_name(target_user_id, target_name) if target_name != "ваш" else target_name)} установлен на {format_number(user_data["balance"])} mCoin</i>',
+            _lf('<i>✅ Successfully! Баланс пользователя {0} установлен на {1} mCoin</i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(user_data['balance']), '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply("<i>Ошибка базы данных!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
+@_localized
 def parse_record_field(field_str: str):
     if not field_str:
         return None, None
     f = field_str.lower().strip()
     if f in ["баланс", "balance", "max_balance", "макс", "максбаланс", "bal", "max", "б"]:
-        return "max_balance", "Рекорд максимального баланса"
+        return "max_balance", _l('Рекорд максимального баланса')
     if f in ["игры", "игры_колво", "games", "game", "игр", "и"]:
-        return "games", "Сыграно игр"
+        return "games", _l('Сыграно игр')
     if f in ["слив", "проигрыш", "проигрыши", "lost", "проиграно", "lose", "с", "п"]:
-        return "lost", "Проиграно m¢"
+        return "lost", _l('Проиграно m¢')
     return None, None
 
 
 @dp.message(Command("setrec", "setrecord", "изменитьрекорд"))
+@_localized
 async def cmd_setrec(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = (message.text or "").strip()
@@ -4185,13 +4177,7 @@ async def cmd_setrec(message: types.Message):
             val_arg = parts[2]
         else:
             await message.reply(
-                "<i>Использование в ответ на сообщение:\n"
-                "/setrec &lt;тип&gt; &lt;значение&gt;\n\n"
-                "Типы:\n"
-                "• <code>баланс</code> (максимальный баланс)\n"
-                "• <code>игры</code> (количество игр)\n"
-                "• <code>слив</code> (сумма проигрышей)\n\n"
-                "Пример: <code>/setrec баланс 50кк</code> или <code>/setrec игры 500</code></i>",
+                _l('<i>Использование в ответ на сообщение:\n/setrec &lt;тип&gt; &lt;значение&gt;\n\nТипы:\n• <code>баланс</code> (максимальный баланс)\n• <code>игры</code> (количество игр)\n• <code>слив</code> (сумма проигрышей)\n\nПример: <code>/setrec баланс 50кк</code> или <code>/setrec игры 500</code></i>'),
                 parse_mode=ParseMode.HTML
             )
             return
@@ -4203,7 +4189,7 @@ async def cmd_setrec(message: types.Message):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.reply(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -4216,18 +4202,11 @@ async def cmd_setrec(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.reply(f"<i>Пользователь {target_arg} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь {0} не найден в базе бота!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         await message.reply(
-            "<i>Использование:\n"
-            "• <code>/setrec &lt;@user/ID&gt; &lt;тип&gt; &lt;значение&gt;</code>\n"
-            "• ответом на сообщение: <code>/setrec &lt;тип&gt; &lt;значение&gt;</code>\n\n"
-            "Доступные типы:\n"
-            "• <code>баланс</code> (максимальный баланс)\n"
-            "• <code>игры</code> (количество сыгранных игр)\n"
-            "• <code>слив</code> (сумма проигрышей)\n\n"
-            "Пример: <code>/setrec @durov баланс 100кк</code></i>",
+            _l('<i>Использование:\n• <code>/setrec &lt;@user/ID&gt; &lt;тип&gt; &lt;значение&gt;</code>\n• ответом на сообщение: <code>/setrec &lt;тип&gt; &lt;значение&gt;</code>\n\nДоступные типы:\n• <code>баланс</code> (максимальный баланс)\n• <code>игры</code> (количество сыгранных игр)\n• <code>слив</code> (сумма проигрышей)\n\nПример: <code>/setrec @durov баланс 100кк</code></i>'),
             parse_mode=ParseMode.HTML
         )
         return
@@ -4235,35 +4214,35 @@ async def cmd_setrec(message: types.Message):
     col_name, col_title = parse_record_field(field_arg)
     if not col_name:
         await message.reply(
-            "<i>Неизвестный тип рекорда! Доступны: <code>баланс</code>, <code>игры</code>, <code>слив</code></i>",
+            _l('<i>Неизвестный тип рекорда! Доступны: <code>баланс</code>, <code>игры</code>, <code>слив</code></i>'),
             parse_mode=ParseMode.HTML
         )
         return
 
     amount = parse_amount(val_arg)
     if amount is None or amount < 0:
-        await message.reply("<i>Неверное значение! Пример: 100, 1.4кк, 500</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Неверное значение! Пример: 100, 1.4кк, 500</i>'), parse_mode=ParseMode.HTML)
         return
 
     kwargs = {col_name: amount}
     if update_user(target_user_id, **kwargs):
-        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.reply(
-            f'<i>{admin_link}, успешно обновлен рекорд для {target_link}!\n'
-            f'👑 <b>{col_title}:</b> {format_number(amount)}</i>',
+            _lf('<i>{0}, успешно обновлен рекорд для {1}!\n👑 <b>{2}:</b> {3}</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1), _fmt(_label(col_title), '', -1), _fmt(format_number(amount), '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply("<i>Ошибка при обновлении базы данных!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка при обновлении базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("delrec", "delrecord", "resetrec", "удалитьрекорд", "сброситьрекорд"))
+@_localized
 async def cmd_delrec(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = (message.text or "").strip()
@@ -4287,7 +4266,7 @@ async def cmd_delrec(message: types.Message):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.reply(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -4303,18 +4282,14 @@ async def cmd_delrec(message: types.Message):
                 col, _ = parse_record_field(target_arg)
                 if col:
                     target_user_id = user_id
-                    target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ"
+                    target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ')
                     field_arg = target_arg
                 else:
-                    await message.reply(f"<i>Пользователь {target_arg} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                    await message.reply(_lf('<i>Пользователь {0} не найден в базе бота!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                     return
     else:
         await message.reply(
-            "<i>Использование:\n"
-            "• <code>/delrec &lt;@user/ID&gt; [тип]</code> — сбросить рекорды пользователя\n"
-            "• ответом на сообщение: <code>/delrec [тип]</code>\n\n"
-            "Типы: <code>все</code> (по умолчанию) | <code>баланс</code> | <code>игры</code> | <code>слив</code>\n"
-            "Пример: <code>/delrec @username</code> или <code>/delrec @username баланс</code></i>",
+            _l('<i>Использование:\n• <code>/delrec &lt;@user/ID&gt; [тип]</code> — сбросить рекорды пользователя\n• ответом на сообщение: <code>/delrec [тип]</code>\n\nТипы: <code>все</code> (по умолчанию) | <code>баланс</code> | <code>игры</code> | <code>слив</code>\nПример: <code>/delrec @username</code> или <code>/delrec @username баланс</code></i>'),
             parse_mode=ParseMode.HTML
         )
         return
@@ -4324,38 +4299,38 @@ async def cmd_delrec(message: types.Message):
 
     if not field_arg or field_arg.lower().strip() in ["все", "all", "всё"]:
         success = update_user(target_user_id, max_balance=cur_balance, games=0, lost=0)
-        desc = f"Все рекорды сброшены (Макс. баланс: {format_number(cur_balance)} m¢, Игры: 0, Проиграно: 0)"
+        desc = _lf('Все рекорды сброшены (Макс. баланс: {0} m¢, Игры: 0, Проиграно: 0)', (_fmt(format_number(cur_balance), '', -1),))
     else:
         col_name, col_title = parse_record_field(field_arg)
         if not col_name:
             await message.reply(
-                "<i>Неизвестный тип рекорда! Доступны: <code>все</code>, <code>баланс</code>, <code>игры</code>, <code>слив</code></i>",
+                _l('<i>Неизвестный тип рекорда! Доступны: <code>все</code>, <code>баланс</code>, <code>игры</code>, <code>слив</code></i>'),
                 parse_mode=ParseMode.HTML
             )
             return
         val = cur_balance if col_name == "max_balance" else 0
         success = update_user(target_user_id, **{col_name: val})
-        desc = f"Рекорд «{col_title}» сброшен в {format_number(val)}"
+        desc = _lf('Рекорд «{0}» сброшен в {1}', (_fmt(_label(col_title), '', -1), _fmt(format_number(val), '', -1)))
 
     if success:
-        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.reply(
-            f'<i>{admin_link}, для пользователя {target_link} успешно выполнено:\n'
-            f'🗑 {desc} ✅</i>',
+            _lf('<i>{0}, для пользователя {1} успешно выполнено:\n🗑 {2} ✅</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1), _fmt(desc, '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply("<i>Ошибка при обновлении базы данных!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка при обновлении базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("sna"))
+@_localized
 async def cmd_sna(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -4365,20 +4340,20 @@ async def cmd_sna(message: types.Message):
         row = cursor.fetchone()
         total_users = row[0] if row else 0
         await message.reply(
-            f"<i>✅ Successfully! Баланс всех игроков обнулен.\n"
-            f"👥 Всего пользователей: {total_users}</i>",
+            _lf('<i>✅ Successfully! Баланс всех игроков обнулен.\n👥 Всего пользователей: {0}</i>', (_fmt(total_users, '', -1),)),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f"<i>Ошибка базы данных: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Ошибка базы данных: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("sn"))
+@_localized
 async def cmd_sn(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -4401,21 +4376,20 @@ async def cmd_sn(message: types.Message):
         total_users = row[0] if row else 0
 
         await message.reply(
-            f"<i>✅ Successfully! База данных полностью очищена.\n"
-            f"👥 Сохранены только профили пользователей ({total_users} шт.).\n"
-            f"🗑 Балансы, статистика (сыграно/проиграно), история игр, переводов и промокоды удалены.</i>",
+            _lf('<i>✅ Successfully! База данных полностью очищена.\n👥 Сохранены только профили пользователей ({0} шт.).\n🗑 Балансы, статистика (сыграно/проиграно), история игр, переводов и промокоды удалены.</i>', (_fmt(total_users, '', -1),)),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f"<i>Ошибка базы данных: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Ошибка базы данных: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("unbd", "унбд"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ["/unbd", "unbd", "унбд", "/унбд"]))
+@_localized
 async def cmd_unbd(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = (message.text or "").strip()
@@ -4433,7 +4407,7 @@ async def cmd_unbd(message: types.Message):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.reply(f"<i>Пользователь @{uname} не найден в базе данных!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь @{0} не найден в базе данных!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -4446,17 +4420,17 @@ async def cmd_unbd(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.reply(f"<i>Пользователь {target_arg} не найден в базе данных!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь {0} не найден в базе данных!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
-        await message.reply("<i>Использование: /unbd &lt;id/@username&gt; или ответом на сообщение пользователя</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Использование: /unbd &lt;id/@username&gt; или ответом на сообщение пользователя</i>'), parse_mode=ParseMode.HTML)
         return
 
     cursor.execute("SELECT 1 FROM users WHERE user_id = ?", (target_user_id,))
     if not cursor.fetchone():
         cursor.execute("SELECT 1 FROM game_stats WHERE user_id = ?", (target_user_id,))
         if not cursor.fetchone():
-            await message.reply(f"<i>Пользователь с ID {target_user_id} не найден в базе данных!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Пользователь с ID {0} не найден в базе данных!</i>', (_fmt(target_user_id, '', -1),)), parse_mode=ParseMode.HTML)
             return
 
     try:
@@ -4484,11 +4458,11 @@ async def cmd_unbd(message: types.Message):
 
         clean_name = html.escape(get_user_display_name(target_user_id, target_name))
         await message.reply(
-            f"<i>✅ Successfully! Пользователь <b>{clean_name}</b> (<code>{target_user_id}</code>) полностью удален из базы данных!</i>",
+            _lf('<i>✅ Successfully! Пользователь <b>{0}</b> (<code>{1}</code>) полностью удален из базы данных!</i>', (_fmt(clean_name, '', -1), _fmt(target_user_id, '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f"<i>Ошибка при удалении пользователя: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Ошибка при удалении пользователя: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 def clean_promo_string(s):
@@ -4501,15 +4475,16 @@ def clean_promo_string(s):
 
 
 @dp.message(Command("cprom"))
+@_localized
 async def cmd_cprom(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()
     if len(args) < 3:
-        await message.answer("<i>Использование: /cprom [название] [награда] [активации]\nПример: <code>/cprom Новый год 100кк 10</code> или <code>/cprom test 50кк</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /cprom [название] [награда] [активации]\nПример: <code>/cprom Новый год 100кк 10</code> или <code>/cprom test 50кк</code></i>'), parse_mode=ParseMode.HTML)
         return
 
     activations = 1
@@ -4519,23 +4494,23 @@ async def cmd_cprom(message: types.Message):
     if len(args) >= 4 and args[-1].isdigit():
         activations = int(args[-1])
         if activations <= 0:
-            await message.answer("<i>Количество активаций должно быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Количество активаций должно быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
         reward = parse_amount(args[-2])
         if reward is None or reward <= 0:
-            await message.answer("<i>Неверная сумма награды! Пример: 100кк, 50000</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверная сумма награды! Пример: 100кк, 50000</i>'), parse_mode=ParseMode.HTML)
             return
         promo_name = clean_promo_string(" ".join(args[1:-2]))
     else:
         reward = parse_amount(args[-1])
         if reward is None or reward <= 0:
-            await message.answer("<i>Неверная сумма награды! Пример: 100кк, 50000</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверная сумма награды! Пример: 100кк, 50000</i>'), parse_mode=ParseMode.HTML)
             return
         promo_name = clean_promo_string(" ".join(args[1:-1]))
         activations = 1
 
     if not promo_name:
-        await message.answer("<i>Укажите название промокода!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Укажите название промокода!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -4552,20 +4527,19 @@ async def cmd_cprom(message: types.Message):
         conn.commit()
 
         await message.reply(
-            f"<i>✅ Промокод «<b>{html.escape(promo_name)}</b>» успешно создан!\n"
-            f"💰 Награда: <b>{format_number(reward)}</b> mCoin\n"
-            f"👥 Количество активаций: <b>{activations}</b></i>",
+            _lf('<i>✅ Промокод «<b>{0}</b>» успешно создан!\n💰 Награда: <b>{1}</b> mCoin\n👥 Количество активаций: <b>{2}</b></i>', (_fmt(html.escape(promo_name), '', -1), _fmt(format_number(reward), '', -1), _fmt(activations, '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f"<i>Ошибка базы данных: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Ошибка базы данных: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("listprom"))
+@_localized
 async def cmd_listprom(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -4576,27 +4550,28 @@ async def cmd_listprom(message: types.Message):
         rows = cursor.fetchall()
 
         if not rows:
-            await message.answer("<i>Список доступных промокодов пуст.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Список доступных промокодов пуст.</i>'), parse_mode=ParseMode.HTML)
             return
 
-        lines = ["<b>📋 Доступные промокоды:</b>\n"]
+        lines = [_l('<b>📋 Доступные промокоды:</b>\n')]
         for code, reward, rem, total in rows:
-            lines.append(f"• «<code>{html.escape(code)}</code>» — {format_number(reward)} mCoin (Осталось: {rem}/{total})")
+            lines.append(_lf('• «<code>{0}</code>» — {1} mCoin (Осталось: {2}/{3})', (_fmt(html.escape(code), '', -1), _fmt(format_number(reward), '', -1), _fmt(rem, '', -1), _fmt(total, '', -1))))
 
         await message.answer("\n".join(lines), parse_mode=ParseMode.HTML)
     except Exception as e:
-        await message.answer(f"<i>Ошибка базы данных: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Ошибка базы данных: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("em"))
+@_localized
 async def cmd_em(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
-    status_msg = await message.answer(f"⏳ Проверяю {len(EMOJI_IDS_TO_CHECK)} emoji-id...")
+    status_msg = await message.answer(_lf('⏳ Проверяю {0} emoji-id...', (_fmt(len(EMOJI_IDS_TO_CHECK), '', -1),)))
 
     good_ids = []
     bad_ids = []
@@ -4616,57 +4591,58 @@ async def cmd_em(message: types.Message):
             bad_ids.append(emoji_id)
         await asyncio.sleep(0.05)
 
-    report = f"✅ Рабочих: {len(good_ids)}/{len(EMOJI_IDS_TO_CHECK)}\n"
+    report = _lf('✅ Рабочих: {0}/{1}\n', (_fmt(len(good_ids), '', -1), _fmt(len(EMOJI_IDS_TO_CHECK), '', -1)))
     if bad_ids:
-        report += "<i>Битые ID (DOCUMENT_INVALID):\n</i>" + "\n".join(f"<code>{i}</code>" for i in bad_ids)
+        report += _l('<i>Битые ID (DOCUMENT_INVALID):\n</i>') + "\n".join(f"<code>{i}</code>" for i in bad_ids)
     else:
-        report += "<i>Битых не найдено.</i>"
+        report += _l('<i>Битых не найдено.</i>')
 
     await status_msg.edit_text(report, parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("event"))
+@_localized
 async def cmd_event(message: types.Message):
     user_id = message.from_user.id
 
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     global event_active, event_started, event_number, event_prize, event_participants, event_message_id, event_chat_id, event_timer_task, event_timeout_task, event_min_num, event_max_num
 
     if event_active:
-        await message.answer("<i>Ивент уже запущен!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ивент уже запущен!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()
 
     if len(args) < 5:
-        await message.answer("<i>Использование: /event [min] [max] [приз] [участники]\nПример: /event 1 250 250kk 5</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /event [min] [max] [приз] [участники]\nПример: /event 1 250 250kk 5</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
         min_num = int(args[1])
         max_num = int(args[2])
         if min_num < 1:
-            await message.answer("<i>Минимальное число должно быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Минимальное число должно быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
         if max_num <= min_num:
-            await message.answer("<i>Максимальное число должно быть больше минимального!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальное число должно быть больше минимального!</i>'), parse_mode=ParseMode.HTML)
             return
         if max_num > 1000000:
-            await message.answer("<i>Максимальное число не может превышать 1,000,000!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальное число не может превышать 1,000,000!</i>'), parse_mode=ParseMode.HTML)
             return
         prize = parse_amount(args[3])
         if prize is None or prize <= 0:
-            await message.answer("<i>Неверная сумма приза!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверная сумма приза!</i>'), parse_mode=ParseMode.HTML)
             return
         max_participants = int(args[4])
         if max_participants < 1:
-            await message.answer("<i>Должен быть хотя бы 1 участник!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Должен быть хотя бы 1 участник!</i>'), parse_mode=ParseMode.HTML)
             return
     except ValueError:
-        await message.answer("<i>Неверный формат! Пример: /event 1 250 250kk 5</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат! Пример: /event 1 250 250kk 5</i>'), parse_mode=ParseMode.HTML)
         return
 
     event_min_num = min_num
@@ -4679,17 +4655,14 @@ async def cmd_event(message: types.Message):
     event_chat_id = message.chat.id
 
     text = (
-        f'<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {format_number(prize)} начался!</b>\n\n'
-        '<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: пока нет\n'
-        '<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша 60 сек.\n'
-        '<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.'
+        _lf('<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {0} начался!</b>\n\n<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: пока нет\n<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша 60 сек.\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.', (_fmt(format_number(prize), '', -1),))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Участвовать",
+                    text=_l('Участвовать'),
                     callback_data="event_join",
                     style="primary",
                     icon_custom_emoji_id="5920090136627908485"
@@ -4724,15 +4697,16 @@ async def _event_participant_links():
         if name == f"ID:{uid}":
             try:
                 user = await bot.get_chat(uid)
-                name = get_user_display_name(uid, user.first_name) or "User"
+                name = get_user_display_name(uid, user.first_name) or _l('Пользователь')
                 if user.first_name:
                     _cache_put(_known_names, uid, user.first_name)
             except Exception:
-                name = "User"
+                name = _l('Пользователь')
         links.append(f'<a href="tg://user?id={uid}">{html.escape(name)}</a>')
     return links
 
 
+@_localized
 async def event_timer(chat_id, message_id):
     global event_active, event_started, event_participants, event_timeout_task
 
@@ -4743,7 +4717,7 @@ async def event_timer(chat_id, message_id):
         if i == 0:
             if len(event_participants) < 1:
                 await bot.edit_message_text(
-                    "<i>Ивент отменен! Недостаточно участников.</i>",
+                    _l('<i>Ивент отменен! Недостаточно участников.</i>'),
                     chat_id=chat_id,
                     message_id=message_id
                 )
@@ -4757,18 +4731,14 @@ async def event_timer(chat_id, message_id):
             participants_list = await _event_participant_links()
 
             text = (
-                f'<tg-emoji emoji-id="5852868430952144622">🔥</tg-emoji> Конкурс начался!\n\n'
-                f'<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {", ".join(participants_list)}\n\n'
-                f'У каждого участника будет по 3 попытки чтобы отгадать нужное число!\n'
-                f'Чтобы испытать свою удачи напиши <code>/i число</code>\n\n'
-                f'⏰ У вас есть 10 минут!'
+                _lf('<tg-emoji emoji-id="5852868430952144622">🔥</tg-emoji> Конкурс начался!\n\n<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {0}\n\nУ каждого участника будет по 3 попытки чтобы отгадать нужное число!\nЧтобы испытать свою удачи напиши <code>/i число</code>\n\n⏰ У вас есть 10 минут!', (_fmt(', '.join(participants_list), '', -1),))
             )
 
             keyboard = InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="Участвовать",
+                            text=_l('Участвовать'),
                             callback_data="event_join",
                             style="primary",
                             icon_custom_emoji_id="5920090136627908485"
@@ -4791,10 +4761,7 @@ async def event_timer(chat_id, message_id):
         participants_count = len(event_participants)
         try:
             await bot.edit_message_text(
-                f'<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {format_number(event_prize)} начался!</b>\n\n'
-                f'<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {participants_count} чел.\n'
-                f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша {i} сек.\n'
-                f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.',
+                _lf('<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {0} начался!</b>\n\n<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {1} чел.\n<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша {2} сек.\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.', (_fmt(format_number(event_prize), '', -1), _fmt(participants_count, '', -1), _fmt(i, '', -1))),
                 chat_id=chat_id,
                 message_id=message_id,
                 parse_mode=ParseMode.HTML,
@@ -4802,7 +4769,7 @@ async def event_timer(chat_id, message_id):
                     inline_keyboard=[
                         [
                             InlineKeyboardButton(
-                                text="Участвовать",
+                                text=_l('Участвовать'),
                                 callback_data="event_join",
                                 style="primary",
                                 icon_custom_emoji_id="5920090136627908485"
@@ -4817,6 +4784,7 @@ async def event_timer(chat_id, message_id):
         await asyncio.sleep(1)
 
 
+@_localized
 async def event_timeout(chat_id, message_id):
     global event_active, event_started, event_number, event_participants
 
@@ -4834,10 +4802,7 @@ async def event_timeout(chat_id, message_id):
     participants_list = await _event_participant_links()
 
     text = (
-        f'⏰ <b>Время вышло!</b>\n\n'
-        f'Загаданное число было: <code>{event_number}</code>\n\n'
-        f'<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {", ".join(participants_list)}\n\n'
-        f'<i>Никто не угадал число. Ивент завершен!</i>'
+        _lf('⏰ <b>Время вышло!</b>\n\nЗагаданное число было: <code>{0}</code>\n\n<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {1}\n\n<i>Никто не угадал число. Ивент завершен!</i>', (_fmt(event_number, '', -1), _fmt(', '.join(participants_list), '', -1)))
     )
 
     await bot.edit_message_text(
@@ -4849,41 +4814,39 @@ async def event_timeout(chat_id, message_id):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "event_join"))
+@_localized
 async def process_event_join(callback: types.CallbackQuery):
     global event_active, event_started, event_participants
 
     if not event_active:
-        await callback.answer("Ивент не активен!", show_alert=True)
+        await callback.answer(_l('Ивент не активен!'), show_alert=True)
         return
 
     if event_started:
-        await callback.answer("Розыгрыш уже начался!", show_alert=True)
+        await callback.answer(_l('Розыгрыш уже начался!'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     if user_id in event_participants:
-        await callback.answer("Вы уже участвуете в розыгрыше!", show_alert=True)
+        await callback.answer(_l('Вы уже участвуете в розыгрыше!'), show_alert=True)
         return
 
     event_participants[user_id] = 3
-    await callback.answer("✅ Вы стали участником розыгрыша!")
+    await callback.answer(_l('✅ Вы стали участником розыгрыша!'))
 
     participants_list = []
     participants_list = await _event_participant_links()
 
     try:
         await callback.message.edit_text(
-            f'<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {format_number(event_prize)} начался!</b>\n\n'
-            f'<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {", ".join(participants_list)}\n'
-            f'<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша ... сек.\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.',
+            _lf('<b><tg-emoji emoji-id="5467671759274661866">🤩</tg-emoji> Ивент на {0} начался!</b>\n\n<tg-emoji emoji-id="5372926953978341366">👥</tg-emoji> Участники: {1}\n<tg-emoji emoji-id="5386367538735104399">⌛</tg-emoji> До начала розыгрыша ... сек.\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Для участия нажми кнопку ниже.', (_fmt(format_number(event_prize), '', -1), _fmt(', '.join(participants_list), '', -1))),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(
                 inline_keyboard=[
                     [
                         InlineKeyboardButton(
-                            text="Участвовать",
+                            text=_l('Участвовать'),
                             callback_data="event_join",
                             style="primary",
                             icon_custom_emoji_id="5920090136627908485"
@@ -4897,11 +4860,12 @@ async def process_event_join(callback: types.CallbackQuery):
 
 
 @dp.message(_inline_filter(lambda message: message.text and message.text.startswith("/i ")))
+@_localized
 async def cmd_i(message: types.Message):
     global event_active, event_started, event_number, event_prize, event_participants, event_min_num, event_max_num
 
     if not event_active or not event_started:
-        await message.answer("<i>Конкурс окончен. Ожидайте новый.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Конкурс окончен. Ожидайте новый.</i>'), parse_mode=ParseMode.HTML)
         return
 
     user_id = message.from_user.id
@@ -4911,19 +4875,19 @@ async def cmd_i(message: types.Message):
         return
 
     if event_participants[user_id] <= 0:
-        await message.reply("<i>У вас закончились попытки!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>У вас закончились попытки!</i>'), parse_mode=ParseMode.HTML)
         await message.delete()
         return
 
     try:
         guess = int(message.text.split()[1])
     except (ValueError, IndexError):
-        await message.reply(f"<i>Введите число от {event_min_num} до {event_max_num}! Пример: /i 50</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Введите число от {0} до {1}! Пример: /i 50</i>', (_fmt(event_min_num, '', -1), _fmt(event_max_num, '', -1))), parse_mode=ParseMode.HTML)
         await message.delete()
         return
 
     if guess < event_min_num or guess > event_max_num:
-        await message.reply(f"<i>Число должно быть от {event_min_num} до {event_max_num}!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Число должно быть от {0} до {1}!</i>', (_fmt(event_min_num, '', -1), _fmt(event_max_num, '', -1))), parse_mode=ParseMode.HTML)
         await message.delete()
         return
 
@@ -4934,23 +4898,22 @@ async def cmd_i(message: types.Message):
         update_user(user_id, balance=user_data["balance"] + event_prize)
 
         await message.reply(
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji> <a href="tg://user?id={user_id}">{html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")}</a> <b>угадал загаданное число и получил {format_number(event_prize)} mCoin!\n'
-            f'Загаданное число было: <code>{event_number}</code></b>',
+            _lf('<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji> <a href="tg://user?id={0}">{1}</a> <b>угадал загаданное число и получил {2} mCoin!\nЗагаданное число было: <code>{3}</code></b>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')), '', -1), _fmt(format_number(event_prize), '', -1), _fmt(event_number, '', -1))),
             parse_mode=ParseMode.HTML
         )
 
         await bot.unpin_chat_message(chat_id=message.chat.id, message_id=event_message_id)
         event_active = False
 
-        results_text = "📊 Результаты:\n"
+        results_text = _l('📊 Результаты:\n')
         for uid, attempts in event_participants.items():
             try:
                 user = await bot.get_chat(uid)
                 name = get_user_display_name(user.id, user.first_name)
             except Exception:
-                name = "User"
+                name = _l('Пользователь')
             clean_p_name = html.escape(str(name))
-            results_text += f'<a href="tg://user?id={uid}">{clean_p_name}</a>: {3 - attempts} попыток\n'
+            results_text += _lf('<a href="tg://user?id={0}">{1}</a>: {2} попыток\n', (_fmt(uid, '', -1), _fmt(clean_p_name, '', -1), _fmt(3 - attempts, '', -1)))
 
         await message.answer(
             results_text,
@@ -4960,16 +4923,14 @@ async def cmd_i(message: types.Message):
 
     if event_participants[user_id] == 0:
         await message.reply(
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <b>Вы не отгадали число!</b>\n'
-            f'Вы истратили все попытки!',
+            _lf('<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <b>Вы не отгадали число!</b>\nВы истратили все попытки!', ()),
             parse_mode=ParseMode.HTML
         )
         await message.delete()
         return
 
     await message.reply(
-        f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <b>Вы не отгадали число!</b>\n'
-        f'Оставшиеся попытки: <code>{event_participants[user_id]}</code>',
+        _lf('<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <b>Вы не отгадали число!</b>\nОставшиеся попытки: <code>{0}</code>', (_fmt(event_participants[user_id], '', -1),)),
         parse_mode=ParseMode.HTML
     )
     await message.delete()
@@ -4977,20 +4938,23 @@ async def cmd_i(message: types.Message):
 
 @dp.message(Command("top"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ", "топ игроков", "мировой топ"]))
+@_localized
 async def cmd_top(message: types.Message):
     await show_top(message)
 
 
 @dp.message(Command("top_chat", "topchat"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы"]))
+@_localized
 async def cmd_top_chat(message: types.Message):
     if message.chat.type not in ["group", "supergroup"]:
-        await message.answer("<i>Эта команда работает только в беседах!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Эта команда работает только в беседах!</i>'), parse_mode=ParseMode.HTML)
         return
     add_chat_member(message.from_user.id, message.chat.id)
     await show_top(message, message.chat.id)
 
 
+@_localized
 async def show_records(message: types.Message):
     async def get_plain_user_name(uid: int):
         settings = get_user_settings(uid)
@@ -5027,28 +4991,22 @@ async def show_records(message: types.Message):
         bal_user_name = await get_plain_user_name(max_bal_row[0])
         bal_text = f'— {bal_user_name} {format_number(max_bal_row[1])} m¢'
     else:
-        bal_text = '— Нет данных'
+        bal_text = _l('— Нет данных')
 
     if max_games_row and max_games_row[1] is not None:
         games_user_name = await get_plain_user_name(max_games_row[0])
-        games_text = f'— {games_user_name} сыграно {format_number(max_games_row[1])} игр.'
+        games_text = _lf('— {0} сыграно {1} игр.', (_fmt(games_user_name, '', -1), _fmt(format_number(max_games_row[1]), '', -1)))
     else:
-        games_text = '— сыграно 0 игр.'
+        games_text = _l('— сыграно 0 игр.')
 
     if max_lost_row and max_lost_row[1] is not None:
         lost_user_name = await get_plain_user_name(max_lost_row[0])
-        lost_text = f'— {lost_user_name} проиграно {format_number(max_lost_row[1])} m¢'
+        lost_text = _lf('— {0} проиграно {1} m¢', (_fmt(lost_user_name, '', -1), _fmt(format_number(max_lost_row[1]), '', -1)))
     else:
-        lost_text = '— проиграно 0 m¢'
+        lost_text = _l('— проиграно 0 m¢')
 
     text = (
-        '<tg-emoji emoji-id="5767161061480340249">👑</tg-emoji> <b>Рекорды бота</b>\n\n'
-        '<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Самый большой баланс:\n'
-        f'{bal_text}\n\n'
-        '<tg-emoji emoji-id="5309815458990433715">🎮</tg-emoji> Игроман бота\n'
-        f'{games_text}\n\n'
-        '<tg-emoji emoji-id="5442983582882601962">🗿</tg-emoji> «Везунчик» бота\n'
-        f'{lost_text}'
+        _lf('<tg-emoji emoji-id="5767161061480340249">👑</tg-emoji> <b>Рекорды бота</b>\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Самый большой баланс:\n{0}\n\n<tg-emoji emoji-id="5309815458990433715">🎮</tg-emoji> Игроман бота\n{1}\n\n<tg-emoji emoji-id="5442983582882601962">🗿</tg-emoji> «Везунчик» бота\n{2}', (_fmt(bal_text, '', -1), _fmt(games_text, '', -1), _fmt(lost_text, '', -1)))
     )
 
     await message.answer(
@@ -5062,12 +5020,14 @@ async def show_records(message: types.Message):
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower().strip() in [
     "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top"
 ]))
+@_localized
 async def cmd_records(message: types.Message):
     await show_records(message)
 
 
 @dp.message(Command("game", "games"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"]))
+@_localized
 async def cmd_game(message: types.Message):
     is_group = message.chat.type in ["group", "supergroup"]
     await show_catalog(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), message.chat.id, is_group)
@@ -5076,6 +5036,7 @@ async def cmd_game(message: types.Message):
 
 @dp.message(Command("mines"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(мины|mines)\s*', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_mines(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5089,7 +5050,7 @@ async def cmd_mines(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = parts[1].strip().split()
@@ -5099,17 +5060,17 @@ async def cmd_mines(message: types.Message):
         if len(args) == 1:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = 1
         elif len(args) >= 2:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = int(args[1])
             if mine_count < 1 or mine_count > 6:
-                await message.answer("<i>Количество мин должно быть от 1 до 6!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Количество мин должно быть от 1 до 6!</i>'), parse_mode=ParseMode.HTML)
                 return
         else:
             await show_mines_info(message, user_id)
@@ -5117,17 +5078,17 @@ async def cmd_mines(message: types.Message):
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 250000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 250kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 250kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_mines_game_from_command(message, user_id, chat_id, bet, mine_count)
@@ -5139,6 +5100,7 @@ async def cmd_mines(message: types.Message):
 
 @dp.message(Command("tower"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(башня|tower)\s*', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_tower(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5152,7 +5114,7 @@ async def cmd_tower(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = parts[1].strip().split()
@@ -5162,17 +5124,17 @@ async def cmd_tower(message: types.Message):
         if len(args) == 1:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = 1
         elif len(args) >= 2:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = int(args[1])
             if mine_count < 1 or mine_count > 4:
-                await message.answer("<i>Количество мин должно быть от 1 до 4!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Количество мин должно быть от 1 до 4!</i>'), parse_mode=ParseMode.HTML)
                 return
         else:
             await show_tower_info(message, user_id)
@@ -5180,17 +5142,17 @@ async def cmd_tower(message: types.Message):
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 250000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 250kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 250kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_tower_game_from_command(message, user_id, chat_id, bet, mine_count)
@@ -5202,6 +5164,7 @@ async def cmd_tower(message: types.Message):
 
 @dp.message(Command("qwak", "квак", "frog"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(квак|qwak|frog|лягушка)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_qwak(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5215,7 +5178,7 @@ async def cmd_qwak(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     tokens = parts[1].strip().split()
@@ -5228,22 +5191,22 @@ async def cmd_qwak(message: types.Message):
     try:
         bet = resolve_bet_amount(bet_str, user_data["balance"])
         if bet is None:
-            await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_qwak_game_from_command(message, user_id, chat_id, bet)
@@ -5255,6 +5218,7 @@ async def cmd_qwak(message: types.Message):
 
 @dp.message(Command("diamond", "diamonds"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(алмазы|алмаз|diamond|diamonds)\s*', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_diamonds(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5268,7 +5232,7 @@ async def cmd_diamonds(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = parts[1].strip().split()
@@ -5278,17 +5242,17 @@ async def cmd_diamonds(message: types.Message):
         if len(args) == 1:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = 1
         elif len(args) >= 2:
             bet = resolve_bet_amount(args[0], user_data["balance"])
             if bet is None:
-                await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
                 return
             mine_count = int(args[1])
             if mine_count < 1 or mine_count > 2:
-                await message.answer("<i>Количество мин должно быть 1 или 2!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Количество мин должно быть 1 или 2!</i>'), parse_mode=ParseMode.HTML)
                 return
         else:
             await show_diamonds_info(message, user_id)
@@ -5296,17 +5260,17 @@ async def cmd_diamonds(message: types.Message):
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 250000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 250kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 250kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_count)
@@ -5316,24 +5280,16 @@ async def cmd_diamonds(message: types.Message):
 
 
 
+@_localized
 async def show_gold_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Золото — это игра, в которой необходимо угадать, где спрятано золото. Вам нужно открывать по одной ячейке с золотом на каждом из 12 уровней.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~100%\n'
-        'Макс. множитель: х4096\n'
-        'Макс. ставка: 200kk m¢\n'
-        'Макс. выигрыш: 1kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>💰 /gold [ставка]</u></b>\n\n'
-        'Пример: <code>/gold 100</code>\n'
-        'Пример: <code>золото 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Золото — это игра, в которой необходимо угадать, где спрятано золото. Вам нужно открывать по одной ячейке с золотом на каждом из 12 уровней.\n📊 Лимиты:\nRTP: ~100%\nМакс. множитель: х4096\nМакс. ставка: 200kk m¢\nМакс. выигрыш: 1kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>💰 /gold [ставка]</u></b>\n\nПример: <code>/gold 100</code>\nПример: <code>золото 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -5342,7 +5298,7 @@ async def show_gold_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_modes",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -5376,6 +5332,7 @@ async def show_gold_info(message_or_callback, user_id, is_callback=False):
 
 @dp.message(Command("gold", "золото", "голд"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(золото|gold|голд)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_gold(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5389,7 +5346,7 @@ async def cmd_gold(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     bet_str = parts[1].strip()
@@ -5398,22 +5355,22 @@ async def cmd_gold(message: types.Message):
     try:
         bet = resolve_bet_amount(bet_str, user_data["balance"])
         if bet is None:
-            await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 200000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 200kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 200kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_gold_game_from_command(message, user_id, chat_id, bet)
@@ -5425,6 +5382,7 @@ async def cmd_gold(message: types.Message):
 
 @dp.message(Command("21", "очко", "ochko", "twentyone"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(21|очко|ochko)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_twentyone(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -5438,7 +5396,7 @@ async def cmd_twentyone(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     bet_str = parts[1].strip()
@@ -5447,22 +5405,22 @@ async def cmd_twentyone(message: types.Message):
     try:
         bet = resolve_bet_amount(bet_str, user_data["balance"])
         if bet is None:
-            await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, вб, пол</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet < 1:
             if user_data["balance"] < 1:
-                await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
             else:
-                await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if bet > 500000000 and not is_admin_unlimited_bet(user_id):
-            await message.answer("<i>Максимальная ставка: 500kk m¢!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Максимальная ставка: 500kk m¢!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if user_data["balance"] < bet:
-            await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         await start_twentyone_game_from_command(message, user_id, chat_id, bet)
@@ -5475,6 +5433,7 @@ async def cmd_twentyone(message: types.Message):
 CRASH_STICKER_ID = "CAACAgIAAxkBAAERvEdqhKGsSq0k-jQQ4fTpDTbyWVntowACGoAAAq1smEp3pQH6UfFOqz0E"
 
 
+@_localized
 async def process_crash_round(message: types.Message, user_id: int, bet: int, target_mult: float, user_first_name: str = None):
     sticker_msg = None
     try:
@@ -5524,9 +5483,7 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
         add_game_history(user_id, "crash", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<blockquote> <tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji>Ракета упала на x<b>{crash_point_str}</b><tg-emoji emoji-id="5244837092042750681">📈</tg-emoji>\n\n'
-            f'<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji> Ты <b>выиграл! Твой выигрыш составил <code>{format_number(win_amount)}</code> m¢</b> </blockquote>'
+            _lf('{0}\n<blockquote> <tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji>Ракета упала на x<b>{1}</b><tg-emoji emoji-id="5244837092042750681">📈</tg-emoji>\n\n<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji> Ты <b>выиграл! Твой выигрыш составил <code>{2}</code> m¢</b> </blockquote>', (_fmt(user_link, '', -1), _fmt(crash_point_str, '', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -5536,9 +5493,7 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
         add_game_history(user_id, "crash", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<blockquote> <tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji>Ракета упала на x<b>{crash_point_str}</b><tg-emoji emoji-id="5246762912428603768">📉</tg-emoji>\n\n'
-            f'<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Ты <b>проиграл <code>{format_number(bet)}</code> m¢</b> </blockquote>'
+            _lf('{0}\n<blockquote> <tg-emoji emoji-id="5283080528818360566">🚀</tg-emoji>Ракета упала на x<b>{1}</b><tg-emoji emoji-id="5246762912428603768">📉</tg-emoji>\n\n<tg-emoji emoji-id="5210952531676504517">❌</tg-emoji> Ты <b>проиграл <code>{2}</code> m¢</b> </blockquote>', (_fmt(user_link, '', -1), _fmt(crash_point_str, '', -1), _fmt(format_number(bet), '', -1)))
         )
 
     await message.answer(
@@ -5550,6 +5505,7 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
 
 @dp.message(Command("crash", "краш"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(краш|crash|кр)\s*', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_crash(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -5569,37 +5525,38 @@ async def cmd_crash(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(args[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 200000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 200kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 200kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     target_mult = parse_multiplier(args[1])
     if target_mult is None or target_mult < 1.01 or target_mult > 100000:
-        await message.answer("<i>Множитель должен быть от x1.01 до x100k! Пример: 1.1, 4, 100к</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Множитель должен быть от x1.01 до x100k! Пример: 1.1, 4, 100к</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_crash_round(message, user_id, bet, target_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
 
 
 
+@_localized
 async def process_slots_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
@@ -5629,13 +5586,7 @@ async def process_slots_outcome(message: types.Message, dice_msg: types.Message,
         add_game_history(user_id, "slots", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Слоты · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'💰 <b>Выигрыш:</b> х15.5 / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Выпало: {combo_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Слоты · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n💰 <b>Выигрыш:</b> х15.5 / {2} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Выпало: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(format_number(win_amount), '', -1), _fmt(combo_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -5645,11 +5596,7 @@ async def process_slots_outcome(message: types.Message, dice_msg: types.Message,
         add_game_history(user_id, "slots", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5276032951342088188">💥</tg-emoji><b>Слоты · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Выпало: {combo_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5276032951342088188">💥</tg-emoji><b>Слоты · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Выпало: {2} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(combo_str, '', -1)))
         )
 
     await message.answer(
@@ -5661,6 +5608,7 @@ async def process_slots_outcome(message: types.Message, dice_msg: types.Message,
 
 @dp.message(Command("slots", "slot"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(слоты|слот|slots|slot)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_slots(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -5679,26 +5627,26 @@ async def cmd_slots(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(args[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -5706,65 +5654,69 @@ async def cmd_slots(message: types.Message):
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await message.answer("<i>Ошибка запуска слотов! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка запуска слотов! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_slots_outcome(message, dice_msg, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
 
 
 
+@_localized
 def parse_bowling_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Страйк (6 кеглей)', 'strike'), ('Мимо (0 кеглей)', 'miss'), ('1 кегля', '1'), ('3 кегли', '3'), ('4 кегли', '4'), ('5 кеглей', '5')))
     t = choice_text.lower().strip()
     if t in ["страйк", "strike", "страйк!", "все", "всё", "all", "6", "6 кеглей", "6кеглей"]:
-        return 6, "Страйк (6 кеглей)"
+        return 6, _l('Страйк (6 кеглей)')
     elif t in ["мимо", "miss", "промах", "ни одной", "0", "0 кеглей", "0кеглей"]:
-        return 1, "Мимо (0 кеглей)"
+        return 1, _l('Мимо (0 кеглей)')
     elif t in ["1", "1 кегля", "1 кеглю", "1 кегли", "1кегля", "1кеглю"]:
-        return 2, "1 кегля"
+        return 2, _l('1 кегля')
     elif t in ["3", "3 кегли", "3 кеглей", "3кегли"]:
-        return 3, "3 кегли"
+        return 3, _l('3 кегли')
     elif t in ["4", "4 кегли", "4 кеглей", "4кегли"]:
-        return 4, "4 кегли"
+        return 4, _l('4 кегли')
     elif t in ["5", "5 кеглей", "5 кегли", "5кеглей"]:
-        return 5, "5 кеглей"
+        return 5, _l('5 кеглей')
     elif t in ["2", "2 кегли", "2 кеглей", "2кегли"]:
-        return 3, "3 кегли"
+        return 3, _l('3 кегли')
     return None, None
 
 
+@_localized
 def get_bowling_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="1 кегля (х5.8)", callback_data=f"bwl_{bet}_2", style="primary"),
-                InlineKeyboardButton(text="3 кегли (х5.8)", callback_data=f"bwl_{bet}_3", style="primary"),
+                InlineKeyboardButton(text=_l('1 кегля (х5.8)'), callback_data=f"bwl_{bet}_2", style="primary"),
+                InlineKeyboardButton(text=_l('3 кегли (х5.8)'), callback_data=f"bwl_{bet}_3", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="4 кегли (х5.8)", callback_data=f"bwl_{bet}_4", style="primary"),
-                InlineKeyboardButton(text="5 кеглей (х5.8)", callback_data=f"bwl_{bet}_5", style="primary"),
+                InlineKeyboardButton(text=_l('4 кегли (х5.8)'), callback_data=f"bwl_{bet}_4", style="primary"),
+                InlineKeyboardButton(text=_l('5 кеглей (х5.8)'), callback_data=f"bwl_{bet}_5", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="Страйк (6 кеглей) (х5.8)", callback_data=f"bwl_{bet}_6", style="primary"),
-                InlineKeyboardButton(text="Мимо (0 кеглей) (х5.8)", callback_data=f"bwl_{bet}_1", style="primary"),
+                InlineKeyboardButton(text=_l('Страйк (6 кеглей) (х5.8)'), callback_data=f"bwl_{bet}_6", style="primary"),
+                InlineKeyboardButton(text=_l('Мимо (0 кеглей) (х5.8)'), callback_data=f"bwl_{bet}_1", style="primary"),
             ]
         ]
     )
 
 
+@_localized
 async def process_bowling_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, target_choice_code: int, target_choice_name: str, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
     val = dice_msg.dice.value if (dice_msg and dice_msg.dice) else 1
 
     outcome_names = {
-        1: "Мимо (0 кеглей)",
-        2: "1 кегля",
-        3: "3 кегли",
-        4: "4 кегли",
-        5: "5 кеглей",
-        6: "Страйк (6 кеглей)"
+        1: _l('Мимо (0 кеглей)'),
+        2: _l('1 кегля'),
+        3: _l('3 кегли'),
+        4: _l('4 кегли'),
+        5: _l('5 кеглей'),
+        6: _l('Страйк (6 кеглей)')
     }
-    outcome_str = outcome_names.get(val, f"{val} кеглей")
+    outcome_str = outcome_names.get(val, _lf('{0} кеглей', (_fmt(val, '', -1),)))
 
     is_win = DEMO_GAME_CONTEXT.get() or (val == target_choice_code)
 
@@ -5784,14 +5736,7 @@ async def process_bowling_outcome(message: types.Message, dice_msg: types.Messag
         add_game_history(user_id, "bowling", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Боулинг · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х5.8 / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Боулинг · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х5.8 / {3} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {4} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(format_number(win_amount), '', -1), _fmt(outcome_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -5801,13 +5746,7 @@ async def process_bowling_outcome(message: types.Message, dice_msg: types.Messag
         add_game_history(user_id, "bowling", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Боулинг · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Боулинг · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(outcome_str, '', -1)))
         )
 
     try:
@@ -5821,6 +5760,7 @@ async def process_bowling_outcome(message: types.Message, dice_msg: types.Messag
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("bwl_")))
+@_localized
 async def process_bowling_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -5838,22 +5778,22 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     target_names = {
-        1: "Мимо (0 кеглей)",
-        2: "1 кегля",
-        3: "3 кегли",
-        4: "4 кегли",
-        5: "5 кеглей",
-        6: "Страйк (6 кеглей)"
+        1: _l('Мимо (0 кеглей)'),
+        2: _l('1 кегля'),
+        3: _l('3 кегли'),
+        4: _l('4 кегли'),
+        5: _l('5 кеглей'),
+        6: _l('Страйк (6 кеглей)')
     }
-    target_name = target_names.get(target_code, f"{target_code} кеглей")
+    target_name = target_names.get(target_code, _lf('{0} кеглей', (_fmt(target_code, '', -1),)))
 
     try:
         await callback.message.delete()
@@ -5865,7 +5805,7 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await callback.message.answer("<i>Ошибка запуска боулинга! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка запуска боулинга! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_bowling_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
@@ -5873,6 +5813,7 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("bowling", "боулинг", "бо"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(боулинг|bowling|бо)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_bowling(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -5891,22 +5832,22 @@ async def cmd_bowling(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -5914,25 +5855,21 @@ async def cmd_bowling(message: types.Message):
         target_code, target_name = parse_bowling_choice(choice_raw)
         if target_code is not None:
             if not update_user(user_id, balance=user_data["balance"] - bet):
-                await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
                 return
             try:
                 dice_msg = await message.answer_dice(emoji="🎳")
             except Exception:
                 user_data = get_user(user_id)
                 update_user(user_id, balance=user_data["balance"] + bet)
-                await message.answer("<i>Ошибка запуска боулинга! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка запуска боулинга! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
                 return
             asyncio.create_task(process_bowling_outcome(message, dice_msg, user_id, bet, target_code, target_name, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"🎳 <b>Боулинг · Выберите итог:</b>\n"
-        f"<code>·····················</code>\n"
-        f"💸 <b>Ставка:</b> {format_number(bet)} m¢\n\n"
-        f"<blockquote><i>Укажите, сколько кеглей собьет бросок:</i></blockquote>"
+        _lf('{0}\n🎳 <b>Боулинг · Выберите итог:</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n\n<blockquote><i>Укажите, сколько кеглей собьет бросок:</i></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -5961,7 +5898,9 @@ def normalize_dice_choice_text(choice_text: str) -> str:
     return re.sub(r"\s+", " ", (choice_text or "").lower().replace("ё", "е").replace("-", " ").strip())
 
 
+@_localized
 def parse_dice_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Равно 3', '=3'), ('Больше 3-х', '>3'), ('Меньше 3-х', '<3'), ('Чёт', 'even'), ('Нечёт', 'odd')))
     t = normalize_dice_choice_text(choice_text)
     compact = t.replace(" ", "")
 
@@ -5979,15 +5918,15 @@ def parse_dice_choice(choice_text: str):
         return "n6", "6", 5.8
 
     if compact in {"=3", "равно3", "ровно3", "равнотрем", "равнотри", "только3"} or t.startswith("равно") or t.startswith("ровно"):
-        return "eq3", "Равно 3", 5.8
+        return "eq3", _l('Равно 3'), 5.8
     if compact in {">3", "больше3", "больше3х", "больше3x", "большетрех", "большетри", "бол3", "б3"} or t.startswith("больше"):
-        return "gt3", "Больше 3-х", 1.97
+        return "gt3", _l('Больше 3-х'), 1.97
     if compact in {"<3", "меньше3", "меньше3х", "меньше3x", "меньшетрех", "меньшетри", "менше3", "меншьше3", "м3"} or t.startswith("меньше") or t.startswith("менше") or t.startswith("меншьше"):
-        return "lt3", "Меньше 3-х", 2.32
+        return "lt3", _l('Меньше 3-х'), 2.32
     if compact in {"нечет", "нечетное", "нечетный", "нечетная", "odd", "н", "неч"}:
-        return "odd", "Нечёт", 2.23
+        return "odd", _l('Нечёт'), 2.23
     if compact in {"чет", "четное", "четный", "четная", "even", "ч"}:
-        return "even", "Чёт", 2.23
+        return "even", _l('Чёт'), 2.23
 
     return None, None, None
 
@@ -6008,6 +5947,7 @@ def is_dice_choice_win(choice_code: str, value: int) -> bool:
     return False
 
 
+@_localized
 def get_dice_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -6024,28 +5964,29 @@ def get_dice_choice_keyboard(bet: int):
                 InlineKeyboardButton(text="6 x5.8", callback_data=f"dice_{bet}_n6", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="Больше 3 x1.97", callback_data=f"dice_{bet}_gt3", style="primary"),
-                InlineKeyboardButton(text="Меньше 3 x2.32", callback_data=f"dice_{bet}_lt3", style="primary"),
+                InlineKeyboardButton(text=_l('Больше 3 x1.97'), callback_data=f"dice_{bet}_gt3", style="primary"),
+                InlineKeyboardButton(text=_l('Меньше 3 x2.32'), callback_data=f"dice_{bet}_lt3", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="Равно 3 x5.8", callback_data=f"dice_{bet}_eq3", style="primary"),
+                InlineKeyboardButton(text=_l('Равно 3 x5.8'), callback_data=f"dice_{bet}_eq3", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="Чёт x2.23", callback_data=f"dice_{bet}_even", style="primary"),
-                InlineKeyboardButton(text="Нечёт x2.23", callback_data=f"dice_{bet}_odd", style="primary"),
+                InlineKeyboardButton(text=_l('Чёт x2.23'), callback_data=f"dice_{bet}_even", style="primary"),
+                InlineKeyboardButton(text=_l('Нечёт x2.23'), callback_data=f"dice_{bet}_odd", style="primary"),
             ]
         ]
     )
 
 
+@_localized
 async def start_dice_game(message: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, user_first_name: str = None):
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return False
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return False
 
     try:
@@ -6053,18 +5994,19 @@ async def start_dice_game(message: types.Message, user_id: int, bet: int, choice
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await message.answer("<i>Ошибка запуска кубика! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка запуска кубика! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return False
 
     asyncio.create_task(process_dice_outcome(message, dice_msg, user_id, bet, choice_code, choice_name, multiplier, user_first_name=user_first_name))
     return True
 
 
+@_localized
 async def process_dice_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
     val = dice_msg.dice.value if (dice_msg and dice_msg.dice) else 1
-    outcome_str = f"Выпало {val}"
+    outcome_str = _lf('Выпало {0}', (_fmt(val, '', -1),))
     is_win = DEMO_GAME_CONTEXT.get() or is_dice_choice_win(choice_code, val)
 
     user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
@@ -6082,14 +6024,7 @@ async def process_dice_outcome(message: types.Message, dice_msg: types.Message, 
         add_game_history(user_id, "dice", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Кубик · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{multiplier:g} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Кубик · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(multiplier, f'g', -1), _fmt(format_number(win_amount), '', -1), _fmt(outcome_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -6099,13 +6034,7 @@ async def process_dice_outcome(message: types.Message, dice_msg: types.Message, 
         add_game_history(user_id, "dice", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Кубик · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Кубик · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(outcome_str, '', -1)))
         )
 
     try:
@@ -6119,6 +6048,7 @@ async def process_dice_outcome(message: types.Message, dice_msg: types.Message, 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dice_")))
+@_localized
 async def process_dice_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -6148,6 +6078,7 @@ async def process_dice_choice_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("dice", "кубик", "куб"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(кубик|dice|куб)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_dice(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6165,22 +6096,22 @@ async def cmd_dice(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -6192,11 +6123,7 @@ async def cmd_dice(message: types.Message):
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"☘️ <b>Кубик · выбери режим!</b>\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢\n\n"
-        f"<b>Ставка на число x5.8 🎲</b>"
+        _lf('{0}\n☘️ <b>Кубик · выбери режим!</b>\n<code>·····················</code>\n🎲 <b>Ставка:</b> {1} m¢\n\n<b>Ставка на число x5.8 🎲</b>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -6217,40 +6144,44 @@ COIN_NAMES = {
 }
 
 
+@_localized
 def parse_coin_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Орёл', 'heads'), ('Решка', 'tails')))
     t = re.sub(r"\s+", " ", (choice_text or "").lower().replace("ё", "е").strip())
     compact = t.replace(" ", "")
     if compact in {"о", "орел", "орёл", "orel", "heads", "head", "h", "eagle"}:
-        return "heads", "Орёл", COIN_MULTIPLIER
+        return "heads", _l('Орёл'), COIN_MULTIPLIER
     if compact in {"р", "решка", "reshka", "tails", "tail", "t"}:
-        return "tails", "Решка", COIN_MULTIPLIER
+        return "tails", _l('Решка'), COIN_MULTIPLIER
     return None, None, None
 
 
+@_localized
 def get_coin_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🦅 Орёл - x1.97", callback_data=f"coinbet_{bet}_heads", style="primary"),
+                InlineKeyboardButton(text=_l('🦅 Орёл - x1.97'), callback_data=f"coinbet_{bet}_heads", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="💎 Решка - x1.97", callback_data=f"coinbet_{bet}_tails", style="primary"),
+                InlineKeyboardButton(text=_l('💎 Решка - x1.97'), callback_data=f"coinbet_{bet}_tails", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="Отменить ❌", callback_data="coin_cancel", style="danger"),
+                InlineKeyboardButton(text=_l('Отменить ❌'), callback_data="coin_cancel", style="danger"),
             ]
         ]
     )
 
 
+@_localized
 async def start_coin_game(message: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, user_first_name: str = None):
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return False
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return False
 
     result_code = "heads" if secrets.randbelow(2) == 0 else "tails"
@@ -6261,17 +6192,18 @@ async def start_coin_game(message: types.Message, user_id: int, bet: int, choice
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await message.answer("<i>Ошибка запуска монетки! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка запуска монетки! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return False
 
     asyncio.create_task(process_coin_outcome(message, user_id, bet, choice_code, choice_name, multiplier, result_code, user_first_name=user_first_name))
     return True
 
 
+@_localized
 async def process_coin_outcome(message: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, result_code: str, user_first_name: str = None):
     await asyncio.sleep(5)
 
-    result_name = COIN_NAMES.get(result_code, "Орёл")
+    result_name = COIN_NAMES.get(result_code, _l('Орёл'))
     is_win = DEMO_GAME_CONTEXT.get() or (choice_code == result_code)
     user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
@@ -6288,14 +6220,7 @@ async def process_coin_outcome(message: types.Message, user_id: int, bet: int, c
         add_game_history(user_id, "coin", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Монетка · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🪙 <b>Выбрано:</b> {choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{multiplier:g} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {result_name} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Монетка · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🪙 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(multiplier, f'g', -1), _fmt(format_number(win_amount), '', -1), _fmt(_label(result_name), '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -6305,13 +6230,7 @@ async def process_coin_outcome(message: types.Message, user_id: int, bet: int, c
         add_game_history(user_id, "coin", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Монетка · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🪙 <b>Выбрано:</b> {choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {result_name} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Монетка · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🪙 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(_label(result_name), '', -1)))
         )
 
     try:
@@ -6325,6 +6244,7 @@ async def process_coin_outcome(message: types.Message, user_id: int, bet: int, c
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("coinbet_")))
+@_localized
 async def process_coin_choice_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -6352,16 +6272,18 @@ async def process_coin_choice_callback(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "coin_cancel"))
+@_localized
 async def process_coin_cancel(callback: types.CallbackQuery):
     try:
         await callback.message.delete()
     except Exception:
         pass
-    await callback.answer("Игра отменена")
+    await callback.answer(_l('Игра отменена'))
 
 
 @dp.message(Command("coin", "монета", "монетка"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(монета|монетка|coin)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_coin(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6379,22 +6301,22 @@ async def cmd_coin(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -6406,10 +6328,7 @@ async def cmd_coin(message: types.Message):
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"🪙 <b>Монета • выбери сторону!</b>\n"
-        f"<code>·····················</code>\n"
-        f"💸 <b>Ставка:</b> {format_number(bet)} m¢"
+        _lf('{0}\n🪙 <b>Монета • выбери сторону!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -6451,14 +6370,15 @@ FISHING_OUTCOMES = [
 ]
 
 
+@_localized
 async def start_fishing_game(message: types.Message, user_id: int, bet: int, user_first_name: str = None):
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return False
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return False
 
     outcome = FISHING_OUTCOMES[0] if DEMO_GAME_CONTEXT.get() else secrets.choice(FISHING_OUTCOMES)
@@ -6467,13 +6387,14 @@ async def start_fishing_game(message: types.Message, user_id: int, bet: int, use
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await message.answer("<i>Ошибка запуска рыбалки! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка запуска рыбалки! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return False
 
     asyncio.create_task(process_fishing_outcome(message, user_id, bet, outcome, user_first_name=user_first_name))
     return True
 
 
+@_localized
 async def process_fishing_outcome(message: types.Message, user_id: int, bet: int, outcome: dict, user_first_name: str = None):
     await asyncio.sleep(3)
 
@@ -6486,19 +6407,14 @@ async def process_fishing_outcome(message: types.Message, user_id: int, bet: int
     if is_win:
         update_user(user_id, balance=current_data["balance"] + win_amount, games=current_data["games"] + 1)
         add_game_history(user_id, "fishing", bet, "win", win_amount)
-        title = '🎣<b>Рыбалка · Победа!</b><tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>'
+        title = _l('🎣<b>Рыбалка · Победа!</b><tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>')
     else:
         update_user(user_id, games=current_data["games"] + 1, lost=current_data["lost"] + bet)
         add_game_history(user_id, "fishing", bet, "lose", 0)
-        title = '😔<b>Рыбалка · Проигрыш!</b>'
+        title = _l('😔<b>Рыбалка · Проигрыш!</b>')
 
     result_text = (
-        f"{user_link}\n"
-        f"{title}\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢\n"
-        f"💰 <b>Выигрыш:</b> x{multiplier:g} / {format_number(win_amount)} m¢\n"
-        f"<blockquote>{outcome.get('note', '')}</blockquote>"
+        _lf('{0}\n{1}\n<code>·····················</code>\n🎲 <b>Ставка:</b> {2} m¢\n💰 <b>Выигрыш:</b> x{3} / {4} m¢\n<blockquote>{5}</blockquote>', (_fmt(user_link, '', -1), _fmt(title, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'g', -1), _fmt(format_number(win_amount), '', -1), _fmt(_label(outcome.get('note', '')), '', -1)))
     )
 
     try:
@@ -6509,6 +6425,7 @@ async def process_fishing_outcome(message: types.Message, user_id: int, bet: int
 
 @dp.message(Command("fishing", "fish", "рыбалка", "рыба"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(рыбалка|рыба|fishing|fish)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_fishing(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6526,22 +6443,22 @@ async def cmd_fishing(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     await start_fishing_game(message, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
@@ -6552,6 +6469,7 @@ CHEST_CELLS_COUNT = 9
 CHEST_PRIZES = [3.0, 1.0, 1.0]
 
 
+@_localized
 def get_chest_choice_keyboard(user_id: int, bet: int):
     rows = []
     for start in range(0, CHEST_CELLS_COUNT, 3):
@@ -6559,7 +6477,7 @@ def get_chest_choice_keyboard(user_id: int, bet: int):
             InlineKeyboardButton(text="🧰", callback_data=f"chest_pick:{user_id}:{bet}:{idx}")
             for idx in range(start, start + 3)
         ])
-    rows.append([InlineKeyboardButton(text="Отменить ❌", callback_data=f"chest_cancel:{user_id}")])
+    rows.append([InlineKeyboardButton(text=_l('Отменить ❌'), callback_data=f"chest_cancel:{user_id}")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -6580,13 +6498,11 @@ def get_chest_reveal_keyboard(prize_cells: dict, picked_idx: int):
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@_localized
 def chest_prompt_text(user_id: int, user_first_name: str, bet: int):
     user_link = get_user_mention(user_id, user_first_name)
     return (
-        f"{user_link}\n"
-        f"🧰<b>Сундук · выбери ящик!</b>\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢"
+        _lf('{0}\n🧰<b>Сундук · выбери ящик!</b>\n<code>·····················</code>\n🎲 <b>Ставка:</b> {1} m¢', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
 
 
@@ -6596,31 +6512,34 @@ def build_chest_prize_cells():
     return {cell: multiplier for cell, multiplier in zip(cells, CHEST_PRIZES)}
 
 
+@_localized
 async def show_chest_menu(message: types.Message, user_id: int, bet: int, user_first_name: str = None):
     await message.answer(
-        text=chest_prompt_text(user_id, user_first_name or "Игрок", bet),
+        text=chest_prompt_text(user_id, user_first_name or _l('Игрок'), bet),
         reply_markup=get_chest_choice_keyboard(user_id, bet),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("chest_cancel:")))
+@_localized
 async def process_chest_cancel(callback: types.CallbackQuery):
     try:
         owner_id = int(callback.data.split(":", 1)[1])
     except Exception:
         owner_id = 0
     if callback.from_user.id != owner_id:
-        await callback.answer("Это не твоя игра", show_alert=True)
+        await callback.answer(_l('Это не твоя игра'), show_alert=True)
         return
     try:
         await callback.message.delete()
     except Exception:
         pass
-    await callback.answer("Игра отменена")
+    await callback.answer(_l('Игра отменена'))
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("chest_pick:")))
+@_localized
 async def process_chest_pick(callback: types.CallbackQuery):
     parts = callback.data.split(":")
     if len(parts) < 4:
@@ -6633,17 +6552,17 @@ async def process_chest_pick(callback: types.CallbackQuery):
         return
 
     if callback.from_user.id != owner_id:
-        await callback.answer("Это не твоя игра", show_alert=True)
+        await callback.answer(_l('Это не твоя игра'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.answer(f"Недостаточно средств! Баланс: {format_number(user_data['balance'])} mCoin", show_alert=True)
+        await callback.answer(_lf('Недостаточно средств! Баланс: {0} mCoin', (_fmt(format_number(user_data['balance']), '', -1),)), show_alert=True)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await callback.answer("Ошибка списания средств", show_alert=True)
+        await callback.answer(_l('Ошибка списания средств'), show_alert=True)
         return
 
     prize_cells = build_chest_prize_cells()
@@ -6657,22 +6576,17 @@ async def process_chest_pick(callback: types.CallbackQuery):
     if is_win:
         update_user(user_id, balance=current_data["balance"] + win_amount, games=current_data["games"] + 1)
         add_game_history(user_id, "chest", bet, "win", win_amount)
-        result_title = '🥳<b>Сундук · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>'
-        result_note = f'🎁 <i>В сундуке найден приз x{multiplier:g}!</i>'
+        result_title = _l('🥳<b>Сундук · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>')
+        result_note = _lf('🎁 <i>В сундуке найден приз x{0}!</i>', (_fmt(multiplier, f'g', -1),))
     else:
         update_user(user_id, games=current_data["games"] + 1, lost=current_data["lost"] + bet)
         add_game_history(user_id, "chest", bet, "lose", 0)
-        result_title = '😔<b>Сундук · Проигрыш!</b>'
-        result_note = '😭 <i>Сундук пустой!</i>'
+        result_title = _l('😔<b>Сундук · Проигрыш!</b>')
+        result_note = _l('😭 <i>Сундук пустой!</i>')
 
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     result_text = (
-        f"{user_link}\n"
-        f"{result_title}\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢\n"
-        f"🎲 <b>Выпало:</b> x{multiplier:g}\n"
-        f"<blockquote>{result_note}</blockquote>"
+        _lf('{0}\n{1}\n<code>·····················</code>\n🎲 <b>Ставка:</b> {2} m¢\n🎲 <b>Выпало:</b> x{3}\n<blockquote>{4}</blockquote>', (_fmt(user_link, '', -1), _fmt(result_title, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'g', -1), _fmt(result_note, '', -1)))
     )
 
     try:
@@ -6693,6 +6607,7 @@ async def process_chest_pick(callback: types.CallbackQuery):
 
 @dp.message(Command("chest", "сундук", "сунд"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(сундук|chest|сунд)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_chest(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -6710,22 +6625,22 @@ async def cmd_chest(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     await show_chest_menu(message, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
@@ -6754,14 +6669,15 @@ def generate_scratch_symbols():
     return [rng.choice(SCRATCH_SYMBOLS) for _ in range(SCRATCH_CELLS_COUNT)]
 
 
+@_localized
 def get_scratch_multiplier(symbols):
     diamond_count = sum(1 for s in symbols if s == "diamond")
     cherry_count = sum(1 for s in symbols if s == "cherry")
     if diamond_count >= 3:
-        return 10.0, "3 алмаза", '<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <i>Выпало 3 алмаза!</i>'
+        return 10.0, _l('3 алмаза'), _l('<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <i>Выпало 3 алмаза!</i>')
     if cherry_count >= 3:
-        return 2.0, "3 вишни", "🍒 <i>Выпало 3 вишни!</i>"
-    return 0.0, "нет совпадений", "😔 <i>Совпадений не хватило.</i>"
+        return 2.0, _l('3 вишни'), _l('🍒 <i>Выпало 3 вишни!</i>')
+    return 0.0, _l('нет совпадений'), _l('😔 <i>Совпадений не хватило.</i>')
 
 
 def scratch_symbols_line(symbols):
@@ -6777,6 +6693,7 @@ def scratch_button_for_symbol(symbol, callback_data):
     return InlineKeyboardButton(**kwargs)
 
 
+@_localized
 def get_scratch_keyboard(game_id: int, symbols: list, revealed: set, settled: bool = False):
     rows = []
     for start in range(0, SCRATCH_CELLS_COUNT, 3):
@@ -6790,18 +6707,19 @@ def get_scratch_keyboard(game_id: int, symbols: list, revealed: set, settled: bo
 
     if not settled:
         rows.append([
-            InlineKeyboardButton(text="🚀 Открыть все сразу", callback_data=f"scratch_openall_{game_id}", style="primary")
+            InlineKeyboardButton(text=_l('🚀 Открыть все сразу'), callback_data=f"scratch_openall_{game_id}", style="primary")
         ])
         if not revealed:
             rows.append([
-                InlineKeyboardButton(text="Отменить ❌", callback_data=f"scratch_cancel_{game_id}", style="danger")
+                InlineKeyboardButton(text=_l('Отменить ❌'), callback_data=f"scratch_cancel_{game_id}", style="danger")
             ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@_localized
 def build_scratch_text(user_id: int, user_name: str, game: dict, settled: bool = False):
     user_name = get_user_display_name(user_id, user_name)
-    user_link = get_user_mention(user_id, user_name or "Игрок")
+    user_link = get_user_mention(user_id, user_name or _l('Игрок'))
     bet = game.get("bet", 0)
     symbols = list(game.get("mine_positions", []))
     revealed = game.get("revealed", set())
@@ -6810,32 +6728,23 @@ def build_scratch_text(user_id: int, user_name: str, game: dict, settled: bool =
 
     if settled:
         if multiplier > 0:
-            title = '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Скретч · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>'
-            win_line = f'💰 <b>Выигрыш:</b> x{multiplier:g} / {format_number(win_amount)} m¢\n'
+            title = _l('<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Скретч · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>')
+            win_line = _lf('💰 <b>Выигрыш:</b> x{0} / {1} m¢\n', (_fmt(multiplier, f'g', -1), _fmt(format_number(win_amount), '', -1)))
         else:
-            title = '<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b>Скретч · Проигрыш!</b>'
+            title = _l('<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b>Скретч · Проигрыш!</b>')
             win_line = ''
         return (
-            f"{user_link}\n"
-            f"{title}\n"
-            f"<code>·····················</code>\n"
-            f"🎲 <b>Ставка:</b> {format_number(bet)} m¢\n"
-            f"{win_line}"
-            f"<blockquote>{note}\n{scratch_symbols_line(symbols)}</blockquote>"
+            _lf('{0}\n{1}\n<code>·····················</code>\n🎲 <b>Ставка:</b> {2} m¢\n{3}<blockquote>{4}\n{5}</blockquote>', (_fmt(user_link, '', -1), _fmt(title, '', -1), _fmt(format_number(bet), '', -1), _fmt(win_line, '', -1), _fmt(note, '', -1), _fmt(scratch_symbols_line(symbols), '', -1)))
         )
 
     if revealed:
-        title = '<b>🎫 Скретч · игра идёт!</b>'
-        extra = f"\n<blockquote>Открыто: {len(revealed)} из {SCRATCH_CELLS_COUNT}</blockquote>"
+        title = _l('<b>🎫 Скретч · игра идёт!</b>')
+        extra = _lf('\n<blockquote>Открыто: {0} из {1}</blockquote>', (_fmt(len(revealed), '', -1), _fmt(SCRATCH_CELLS_COUNT, '', -1)))
     else:
-        title = '<b>🎫 Скретч · начни игру!</b>'
+        title = _l('<b>🎫 Скретч · начни игру!</b>')
         extra = ''
     return (
-        f"{user_link}\n"
-        f"{title}\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢"
-        f"{extra}"
+        _lf('{0}\n{1}\n<code>·····················</code>\n🎲 <b>Ставка:</b> {2} m¢{3}', (_fmt(user_link, '', -1), _fmt(title, '', -1), _fmt(format_number(bet), '', -1), _fmt(extra, '', -1)))
     )
 
 
@@ -6864,6 +6773,7 @@ def settle_scratch_game(game_id: int, user_id: int):
     remove_active_game_from_db(game_id)
 
 
+@_localized
 async def start_scratch_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -6872,7 +6782,7 @@ async def start_scratch_game_from_command(message, user_id, chat_id, bet):
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     game_id = get_next_game_id()
@@ -6906,16 +6816,17 @@ async def start_scratch_game_from_command(message, user_id, chat_id, bet):
     await show_scratch_grid_from_message(message, user_id, game_id)
 
 
+@_localized
 async def show_scratch_grid_from_message(message, user_id, game_id, settled=False):
     game = games.get(game_id)
     if not game:
-        await message.answer("<i>Игра не найдена!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Игра не найдена!</i>'), parse_mode=ParseMode.HTML)
         return
     if game.get("owner_id") != user_id:
         return
 
     is_settled = settled or game.get("settled", False) or game.get("game_over", False)
-    text = build_scratch_text(user_id, get_user_display_name(user_id, message.from_user.first_name) or "Игрок", game, settled=is_settled)
+    text = build_scratch_text(user_id, get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок'), game, settled=is_settled)
     keyboard = get_scratch_keyboard(game_id, list(game.get("mine_positions", [])), game.get("revealed", set()), settled=is_settled)
     try:
         msg = await message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
@@ -6930,16 +6841,17 @@ async def show_scratch_grid_from_message(message, user_id, game_id, settled=Fals
     _remember_message(game_messages, key, msg.message_id)
 
 
+@_localized
 async def show_scratch_grid_from_callback(callback, user_id, game_id, settled=False):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
     if game.get("owner_id") != user_id:
         return
 
     is_settled = settled or game.get("settled", False) or game.get("game_over", False)
-    text = build_scratch_text(user_id, get_user_display_name(user_id, callback.from_user.first_name) or "Игрок", game, settled=is_settled)
+    text = build_scratch_text(user_id, get_user_display_name(user_id, callback.from_user.first_name) or _l('Игрок'), game, settled=is_settled)
     keyboard = get_scratch_keyboard(game_id, list(game.get("mine_positions", [])), game.get("revealed", set()), settled=is_settled)
     try:
         msg = await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
@@ -6955,6 +6867,7 @@ async def show_scratch_grid_from_callback(callback, user_id, game_id, settled=Fa
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_cell_")))
+@_localized
 async def process_scratch_cell(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     if len(parts) < 3:
@@ -6963,22 +6876,22 @@ async def process_scratch_cell(callback: types.CallbackQuery):
         game_id = int(parts[-2])
         idx = int(parts[-1])
     except Exception:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
     if game.get("owner_id") != user_id:
-        await callback.answer("Это не твоя игра", show_alert=True)
+        await callback.answer(_l('Это не твоя игра'), show_alert=True)
         return
     if game.get("settled") or game.get("game_over"):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
     if idx < 0 or idx >= SCRATCH_CELLS_COUNT:
-        await callback.answer("Ошибка клетки", show_alert=True)
+        await callback.answer(_l('Ошибка клетки'), show_alert=True)
         return
     if game.get("is_processing"):
         await callback.answer()
@@ -7002,22 +6915,23 @@ async def process_scratch_cell(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_openall_")))
+@_localized
 async def process_scratch_openall(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
     if game.get("owner_id") != user_id:
-        await callback.answer("Это не твоя игра", show_alert=True)
+        await callback.answer(_l('Это не твоя игра'), show_alert=True)
         return
     if game.get("settled") or game.get("game_over"):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
     if game.get("is_processing"):
         await callback.answer()
@@ -7036,6 +6950,7 @@ async def process_scratch_openall(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("scratch_cancel_")))
+@_localized
 async def process_scratch_cancel(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -7044,13 +6959,13 @@ async def process_scratch_cancel(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
     if game.get("owner_id") != user_id:
-        await callback.answer("Это не твоя игра", show_alert=True)
+        await callback.answer(_l('Это не твоя игра'), show_alert=True)
         return
     if game.get("revealed") or game.get("bet_placed") or game.get("settled"):
-        await callback.answer("Нельзя отменить начатую игру", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру'), show_alert=True)
         return
     user_data = get_user(user_id)
     update_user(user_id, balance=user_data["balance"] + int(game.get("bet", 0)))
@@ -7063,11 +6978,12 @@ async def process_scratch_cancel(callback: types.CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-    await callback.answer("Игра отменена")
+    await callback.answer(_l('Игра отменена'))
 
 
 @dp.message(Command("scratch", "скретч", "скретчка"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(скретч|scratch|скретчка)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_scratch(message: types.Message):
     user_id = message.from_user.id
     chat_id = message.chat.id
@@ -7079,7 +6995,7 @@ async def cmd_scratch(message: types.Message):
 
     unplayed = get_active_unplayed_games(user_id)
     if unplayed:
-        await message.answer("<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас уже есть игра! Закончите или доиграйте активную игру.</i>'), parse_mode=ParseMode.HTML)
         return
 
     tokens = parts[1].strip().split()
@@ -7089,19 +7005,19 @@ async def cmd_scratch(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
     if bet > SCRATCH_MAX_BET and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
     await start_scratch_game_from_command(message, user_id, chat_id, bet)
 
@@ -7174,13 +7090,11 @@ def roulette_photo_path():
     return None
 
 
+@_localized
 def roulette_prompt_text(user_id: int, user_first_name: str, bet: int) -> str:
     user_link = get_user_mention(user_id, user_first_name)
     return (
-        f"{user_link}\n"
-        f"🎱 <b>Рулетка · выбери режим!</b>\n"
-        f"<code>·····················</code>\n"
-        f"🎲 <b>Ставка:</b> {format_number(bet)} m¢"
+        _lf('{0}\n🎱 <b>Рулетка · выбери режим!</b>\n<code>·····················</code>\n🎲 <b>Ставка:</b> {1} m¢', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
 
 
@@ -7192,17 +7106,18 @@ def roulette_nav_button(text: str, bet: int, page: str, style: str = "primary"):
     return InlineKeyboardButton(text=text, callback_data=f"roul_menu:{bet}:{page}", style=style)
 
 
+@_localized
 def get_roulette_main_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [roulette_nav_button("Ставка на число x35 ⚪", bet, "numbers")],
+            [roulette_nav_button(_l('Ставка на число x35 ⚪'), bet, "numbers")],
             [
-                roulette_pick_button("🔴 Красный x1.97", bet, "red"),
-                roulette_pick_button("⚫ Чёрный x1.97", bet, "black"),
+                roulette_pick_button(_l('🔴 Красный x1.97'), bet, "red"),
+                roulette_pick_button(_l('⚫ Чёрный x1.97'), bet, "black"),
             ],
             [
-                roulette_pick_button("⚖️ Чётный x1.97", bet, "even"),
-                roulette_pick_button("🔰 Нечётный x1.97", bet, "odd"),
+                roulette_pick_button(_l('⚖️ Чётный x1.97'), bet, "even"),
+                roulette_pick_button(_l('🔰 Нечётный x1.97'), bet, "odd"),
             ],
             [
                 roulette_pick_button("1️⃣ 1-12 x2.9", bet, "dozen1"),
@@ -7210,30 +7125,32 @@ def get_roulette_main_keyboard(bet: int):
                 roulette_pick_button("3️⃣ 25-36 x2.9", bet, "dozen3"),
             ],
             [
-                roulette_pick_button("1️⃣ ряд x2.9", bet, "row1"),
-                roulette_pick_button("2️⃣ ряд x2.9", bet, "row2"),
-                roulette_pick_button("3️⃣ ряд x2.9", bet, "row3"),
+                roulette_pick_button(_l('1️⃣ ряд x2.9'), bet, "row1"),
+                roulette_pick_button(_l('2️⃣ ряд x2.9'), bet, "row2"),
+                roulette_pick_button(_l('3️⃣ ряд x2.9'), bet, "row3"),
             ],
             [
-                roulette_pick_button("🔽 малые x1.97", bet, "low"),
-                roulette_pick_button("🔼 большие x1.97", bet, "high"),
+                roulette_pick_button(_l('🔽 малые x1.97'), bet, "low"),
+                roulette_pick_button(_l('🔼 большие x1.97'), bet, "high"),
             ],
             [
-                roulette_nav_button("🔳 Блоки x8.7", bet, "blocks1"),
-                roulette_nav_button("3️⃣ Стрит x11.6", bet, "streets"),
+                roulette_nav_button(_l('🔳 Блоки x8.7'), bet, "blocks1"),
+                roulette_nav_button(_l('3️⃣ Стрит x11.6'), bet, "streets"),
             ],
         ]
     )
 
 
+@_localized
 def get_roulette_numbers_keyboard(bet: int):
-    rows = [[roulette_pick_button("🟢 Зеро (0)", bet, "n0")]]
+    rows = [[roulette_pick_button(_l('🟢 Зеро (0)'), bet, "n0")]]
     for start in range(1, 37, 6):
         rows.append([roulette_pick_button(str(n), bet, f"n{n}") for n in range(start, min(start + 6, 37))])
-    rows.append([roulette_nav_button("◀️ назад", bet, "main")])
+    rows.append([roulette_nav_button(_l('◀️ назад'), bet, "main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@_localized
 def get_roulette_blocks_keyboard(bet: int, page: int = 1):
     blocks = ROULETTE_BLOCKS[:12] if page == 1 else ROULETTE_BLOCKS[12:]
     rows = []
@@ -7248,10 +7165,11 @@ def get_roulette_blocks_keyboard(bet: int, page: int = 1):
         rows.append([roulette_nav_button("▶️", bet, "blocks2")])
     else:
         rows.append([roulette_nav_button("◀️", bet, "blocks1")])
-        rows.append([roulette_nav_button("◀️ назад", bet, "main")])
+        rows.append([roulette_nav_button(_l('◀️ назад'), bet, "main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@_localized
 def get_roulette_streets_keyboard(bet: int):
     rows = []
     for i in range(0, len(ROULETTE_STREETS), 3):
@@ -7260,7 +7178,7 @@ def get_roulette_streets_keyboard(bet: int):
             label = f"{street[0]}-{street[-1]}"
             row.append(roulette_pick_button(label, bet, f"s{street[0]}"))
         rows.append(row)
-    rows.append([roulette_nav_button("◀️ назад", bet, "main")])
+    rows.append([roulette_nav_button(_l('◀️ назад'), bet, "main")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -7276,24 +7194,25 @@ def get_roulette_keyboard(bet: int, page: str = "main"):
     return get_roulette_main_keyboard(bet)
 
 
+@_localized
 def roulette_choice_meta(code: str):
     code = str(code or "")
     if code.startswith("n") and code[1:].isdigit():
         n = int(code[1:])
         if 0 <= n <= 36:
-            return ("Зеро (0)" if n == 0 else str(n)), 35.0, {n}
+            return (_l('Зеро (0)') if n == 0 else str(n)), 35.0, {n}
     if code == "red":
-        return "Красный", 1.97, set(ROULETTE_RED_NUMBERS)
+        return _l('Красный'), 1.97, set(ROULETTE_RED_NUMBERS)
     if code == "black":
-        return "Чёрный", 1.97, set(ROULETTE_BLACK_NUMBERS)
+        return _l('Чёрный'), 1.97, set(ROULETTE_BLACK_NUMBERS)
     if code == "even":
-        return "Чётный", 1.97, {n for n in range(1, 37) if n % 2 == 0}
+        return _l('Чётный'), 1.97, {n for n in range(1, 37) if n % 2 == 0}
     if code == "odd":
-        return "Нечётный", 1.97, {n for n in range(1, 37) if n % 2 == 1}
+        return _l('Нечётный'), 1.97, {n for n in range(1, 37) if n % 2 == 1}
     if code == "low":
-        return "Малые (1-18)", 1.97, set(range(1, 19))
+        return _l('Малые (1-18)'), 1.97, set(range(1, 19))
     if code == "high":
-        return "Большие (19-36)", 1.97, set(range(19, 37))
+        return _l('Большие (19-36)'), 1.97, set(range(19, 37))
     if code in {"dozen1", "dozen2", "dozen3"}:
         idx = int(code[-1])
         start = (idx - 1) * 12 + 1
@@ -7301,7 +7220,7 @@ def roulette_choice_meta(code: str):
         return f"{start}-{end}", 2.9, set(range(start, end + 1))
     if code in {"row1", "row2", "row3"}:
         idx = int(code[-1])
-        return f"{idx} ряд", 2.9, set(range(idx, 37, 3))
+        return _lf('{0} ряд', (_fmt(idx, '', -1),)), 2.9, set(range(idx, 37, 3))
     if code.startswith("s") and code[1:].isdigit():
         start = int(code[1:])
         street = tuple(range(start, start + 3))
@@ -7322,6 +7241,7 @@ def normalize_roulette_choice_text(choice_text: str) -> str:
 
 
 def parse_roulette_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Красный', 'red'), ('Чёрный', 'black'), ('Чётный', 'even'), ('Нечётный', 'odd'), ('Малые (1-18)', 'low'), ('Большие (19-36)', 'high'), ('Зеро (0)', 'zero')))
     t = normalize_roulette_choice_text(choice_text)
     compact = t.replace(" ", "")
     aliases = {
@@ -7334,9 +7254,9 @@ def parse_roulette_choice(choice_text: str):
         "1-12": "dozen1", "112": "dozen1", "перваядюжина": "dozen1", "1дюжина": "dozen1",
         "13-24": "dozen2", "1324": "dozen2", "втораядюжина": "dozen2", "2дюжина": "dozen2",
         "25-36": "dozen3", "2536": "dozen3", "третьядюжина": "dozen3", "3дюжина": "dozen3",
-        "1ряд": "row1", "ряд1": "row1", "1р": "row1",
-        "2ряд": "row2", "ряд2": "row2", "2р": "row2",
-        "3ряд": "row3", "ряд3": "row3", "3р": "row3",
+        "1ряд": "row1", "ряд1": "row1", "1р": "row1", "row1": "row1", "1қатар": "row1",
+        "2ряд": "row2", "ряд2": "row2", "2р": "row2", "row2": "row2", "2қатар": "row2",
+        "3ряд": "row3", "ряд3": "row3", "3р": "row3", "row3": "row3", "3қатар": "row3",
         "зеро": "n0", "zero": "n0", "ноль": "n0",
     }
     if compact in aliases:
@@ -7384,9 +7304,10 @@ def parse_roulette_choice(choice_text: str):
     return None, None, None, None
 
 
+@_localized
 def roulette_result_label(result: int) -> str:
     if result == 0:
-        return "🟢 Зеро (0)"
+        return _l('🟢 Зеро (0)')
     if result in ROULETTE_RED_NUMBERS:
         return f"🔴 {result}"
     return f"⚫ {result}"
@@ -7425,14 +7346,15 @@ async def send_or_edit_roulette_menu(target, user_id: int, user_first_name: str,
     await target.answer(text=text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 async def start_roulette_game(message: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, win_numbers: set, user_first_name: str = None):
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return False
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return False
 
     result = secrets.randbelow(37)
@@ -7441,17 +7363,18 @@ async def start_roulette_game(message: types.Message, user_id: int, bet: int, ch
         if sticker_id:
             await bot.send_sticker(chat_id=message.chat.id, sticker=sticker_id)
         else:
-            await message.answer(f"🎱 Выпало: {roulette_result_label(result)}", parse_mode=ParseMode.HTML)
+            await message.answer(_lf('🎱 Выпало: {0}', (_fmt(roulette_result_label(result), '', -1),)), parse_mode=ParseMode.HTML)
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await message.answer("<i>Ошибка запуска рулетки! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка запуска рулетки! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return False
 
     asyncio.create_task(process_roulette_outcome(message, user_id, bet, choice_code, choice_name, multiplier, win_numbers, result, user_first_name=user_first_name))
     return True
 
 
+@_localized
 async def process_roulette_outcome(message: types.Message, user_id: int, bet: int, choice_code: str, choice_name: str, multiplier: float, win_numbers: set, result: int, user_first_name: str = None):
     await asyncio.sleep(3.5)
 
@@ -7469,14 +7392,7 @@ async def process_roulette_outcome(message: types.Message, user_id: int, bet: in
         add_game_history(user_id, "roulette", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Рулетка · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎱 <b>Выбрано:</b> {choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{multiplier:g} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {result_text} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Рулетка · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎱 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(multiplier, f'g', -1), _fmt(format_number(win_amount), '', -1), _fmt(result_text, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -7486,13 +7402,7 @@ async def process_roulette_outcome(message: types.Message, user_id: int, bet: in
         add_game_history(user_id, "roulette", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Рулетка · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎱 <b>Выбрано:</b> {choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {result_text} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Рулетка · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎱 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(choice_name), '', -1), _fmt(result_text, '', -1)))
         )
 
     try:
@@ -7502,6 +7412,7 @@ async def process_roulette_outcome(message: types.Message, user_id: int, bet: in
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("roul_menu:")))
+@_localized
 async def process_roulette_menu_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -7519,6 +7430,7 @@ async def process_roulette_menu_callback(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("roul_pick:")))
+@_localized
 async def process_roulette_pick_callback(callback: types.CallbackQuery):
     try:
         await callback.answer()
@@ -7544,6 +7456,7 @@ async def process_roulette_pick_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("roulette", "рулетка", "рул"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(рулетка|roulette|рул)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_roulette(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -7561,22 +7474,22 @@ async def cmd_roulette(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -7585,55 +7498,59 @@ async def cmd_roulette(message: types.Message):
         if code is not None:
             await start_roulette_game(message, user_id, bet, code, choice_name, multiplier, win_numbers, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
-        await message.answer("<i>Не понял исход. Примеры: <code>рулетка 100 ч</code>, <code>рулетка 100 1</code>, <code>рулетка 100 1,2,3</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Не понял исход. Примеры: <code>рулетка 100 ч</code>, <code>рулетка 100 1</code>, <code>рулетка 100 1,2,3</code></i>'), parse_mode=ParseMode.HTML)
         return
 
     await send_or_edit_roulette_menu(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), bet, page="main", edit=False)
 
 
 
+@_localized
 def parse_darts_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Красное', 'red'), ('Белое', 'white'), ('Центр', 'center'), ('Мимо', 'miss')))
     t = choice_text.lower().strip()
     if t in ["красное", "красный", "красная", "red", "к", "крас"]:
-        return "red", "🔴 Красное", 1.94
+        return "red", _l('🔴 Красное'), 1.94
     elif t in ["белое", "белый", "белая", "white", "б", "бел"]:
-        return "white", "⚪️ Белое", 2.9
+        return "white", _l('⚪️ Белое'), 2.9
     elif t in ["центр", "яблочко", "булзай", "center", "bullseye", "ц", "в центр"]:
-        return "center", "🎯 Центр", 5.8
+        return "center", _l('🎯 Центр'), 5.8
     elif t in ["мимо", "промах", "miss", "м"]:
-        return "miss", "😯 Мимо", 5.8
+        return "miss", _l('😯 Мимо'), 5.8
     return None, None, None
 
 
+@_localized
 def get_darts_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🔴 Красное (х1.94)", callback_data=f"darts_{bet}_red", style="primary"),
-                InlineKeyboardButton(text="⚪️ Белое (х2.9)", callback_data=f"darts_{bet}_white", style="primary"),
+                InlineKeyboardButton(text=_l('🔴 Красное (х1.94)'), callback_data=f"darts_{bet}_red", style="primary"),
+                InlineKeyboardButton(text=_l('⚪️ Белое (х2.9)'), callback_data=f"darts_{bet}_white", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="🎯 Центр (х5.8)", callback_data=f"darts_{bet}_center", style="primary"),
-                InlineKeyboardButton(text="😯 Мимо (х5.8)", callback_data=f"darts_{bet}_miss", style="primary"),
+                InlineKeyboardButton(text=_l('🎯 Центр (х5.8)'), callback_data=f"darts_{bet}_center", style="primary"),
+                InlineKeyboardButton(text=_l('😯 Мимо (х5.8)'), callback_data=f"darts_{bet}_miss", style="primary"),
             ]
         ]
     )
 
 
+@_localized
 async def process_darts_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, target_choice_code: str, target_choice_name: str, win_mult: float, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
     val = dice_msg.dice.value if (dice_msg and dice_msg.dice) else 1
 
     outcome_names = {
-        1: "😯 Мимо",
-        2: "🔴 Красное кольцо",
-        3: "⚪️ Белое кольцо",
-        4: "🔴 Красное кольцо",
-        5: "⚪️ Белое кольцо",
-        6: "🎯 Центр (Яблочко)"
+        1: _l('😯 Мимо'),
+        2: _l('🔴 Красное кольцо'),
+        3: _l('⚪️ Белое кольцо'),
+        4: _l('🔴 Красное кольцо'),
+        5: _l('⚪️ Белое кольцо'),
+        6: _l('🎯 Центр (Яблочко)')
     }
-    outcome_str = outcome_names.get(val, f"Сектор {val}")
+    outcome_str = outcome_names.get(val, _lf('Сектор {0}', (_fmt(val, '', -1),)))
 
     is_win = False
     if target_choice_code == "red" and val in [2, 4, 6]:
@@ -7661,14 +7578,7 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
         add_game_history(user_id, "darts", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Дартс · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{win_mult} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Дартс · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(win_mult, '', -1), _fmt(format_number(win_amount), '', -1), _fmt(outcome_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -7678,13 +7588,7 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
         add_game_history(user_id, "darts", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Дартс · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Дартс · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(outcome_str, '', -1)))
         )
 
     await message.answer(
@@ -7695,6 +7599,7 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("darts_")))
+@_localized
 async def process_darts_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -7707,10 +7612,10 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
         return
 
     code_map = {
-        "red": ("🔴 Красное", 1.94),
-        "white": ("⚪️ Белое", 2.9),
-        "center": ("🎯 Центр", 5.8),
-        "miss": ("😯 Мимо", 5.8)
+        "red": (_l('🔴 Красное'), 1.94),
+        "white": (_l('⚪️ Белое'), 2.9),
+        "center": (_l('🎯 Центр'), 5.8),
+        "miss": (_l('😯 Мимо'), 5.8)
     }
     if target_code not in code_map:
         return
@@ -7719,11 +7624,11 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -7736,7 +7641,7 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await callback.message.answer("<i>Ошибка запуска дартса! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка запуска дартса! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_darts_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
@@ -7744,6 +7649,7 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("darts", "дартс", "дс", "dart"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(дартс|darts|дс|dart)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_darts(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -7762,22 +7668,22 @@ async def cmd_darts(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -7785,29 +7691,21 @@ async def cmd_darts(message: types.Message):
         target_code, target_name, win_mult = parse_darts_choice(choice_raw)
         if target_code is not None:
             if not update_user(user_id, balance=user_data["balance"] - bet):
-                await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
                 return
             try:
                 dice_msg = await message.answer_dice(emoji="🎯")
             except Exception:
                 user_data = get_user(user_id)
                 update_user(user_id, balance=user_data["balance"] + bet)
-                await message.answer("<i>Ошибка запуска дартса! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка запуска дартса! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
                 return
             asyncio.create_task(process_darts_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"🎯 <b>Дартс · выбери исход!</b>\n"
-        f"<code>·····················</code>\n"
-        f"💸 <b>Ставка:</b> {format_number(bet)} m¢\n\n"
-        f"🔰 <b>Коэффициенты:</b>\n"
-        f"🔴 Красное (х1.94)\n"
-        f"⚪️ Белое (х2.9)\n"
-        f"🎯 Центр (х5.8)\n"
-        f"😯 Мимо (х5.8)"
+        _lf('{0}\n🎯 <b>Дартс · выбери исход!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n\n🔰 <b>Коэффициенты:</b>\n🔴 Красное (х1.94)\n⚪️ Белое (х2.9)\n🎯 Центр (х5.8)\n😯 Мимо (х5.8)', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -7817,44 +7715,48 @@ async def cmd_darts(message: types.Message):
 
 
 
+@_localized
 def parse_basketball_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Попадание', 'hit'), ('Мимо', 'miss'), ('Застрял мяч', 'stuck')))
     t = choice_text.lower().strip()
     if t in ["попадание", "попал", "гол", "hit", "score", "п", "г", "в корзину", "1"]:
-        return "hit", "🏀 Попадание", 2.4
+        return "hit", _l('🏀 Попадание'), 2.4
     elif t in ["мимо", "промах", "miss", "м", "0"]:
-        return "miss", "💨 Мимо", 2.4
+        return "miss", _l('💨 Мимо'), 2.4
     elif t in ["застрял", "застрял мяч", "дужка", "stuck", "з"]:
-        return "stuck", "🛑 Застрял мяч", 4.8
+        return "stuck", _l('🛑 Застрял мяч'), 4.8
     return None, None, None
 
 
+@_localized
 def get_basketball_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="🏀 Попадание (х2.4)", callback_data=f"bb_{bet}_hit", style="primary"),
-                InlineKeyboardButton(text="💨 Мимо (х2.4)", callback_data=f"bb_{bet}_miss", style="primary"),
+                InlineKeyboardButton(text=_l('🏀 Попадание (х2.4)'), callback_data=f"bb_{bet}_hit", style="primary"),
+                InlineKeyboardButton(text=_l('💨 Мимо (х2.4)'), callback_data=f"bb_{bet}_miss", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="🛑 Застрял мяч (х4.8)", callback_data=f"bb_{bet}_stuck", style="primary"),
+                InlineKeyboardButton(text=_l('🛑 Застрял мяч (х4.8)'), callback_data=f"bb_{bet}_stuck", style="primary"),
             ]
         ]
     )
 
 
+@_localized
 async def process_basketball_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, target_choice_code: str, target_choice_name: str, win_mult: float, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
     val = dice_msg.dice.value if (dice_msg and dice_msg.dice) else 1
 
     outcome_names = {
-        1: "💨 Мимо",
-        2: "💨 Отскок мимо",
-        3: "🛑 Застрял мяч",
-        4: "🏀 Попадание!",
-        5: "🏀 Чистое попадание!"
+        1: _l('💨 Мимо'),
+        2: _l('💨 Отскок мимо'),
+        3: _l('🛑 Застрял мяч'),
+        4: _l('🏀 Попадание!'),
+        5: _l('🏀 Чистое попадание!')
     }
-    outcome_str = outcome_names.get(val, "Мимо")
+    outcome_str = outcome_names.get(val, _l('Мимо'))
 
     is_win = False
     if target_choice_code == "hit" and val in [4, 5]:
@@ -7880,14 +7782,7 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
         add_game_history(user_id, "basketball", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Баскетбол · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{win_mult} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Баскетбол · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(win_mult, '', -1), _fmt(format_number(win_amount), '', -1), _fmt(outcome_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -7897,13 +7792,7 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
         add_game_history(user_id, "basketball", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Баскетбол · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Баскетбол · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(outcome_str, '', -1)))
         )
 
     await message.answer(
@@ -7914,6 +7803,7 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("bb_")))
+@_localized
 async def process_basketball_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -7926,9 +7816,9 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
         return
 
     code_map = {
-        "hit": ("🏀 Попадание", 2.4),
-        "miss": ("💨 Мимо", 2.4),
-        "stuck": ("🛑 Застрял мяч", 4.8)
+        "hit": (_l('🏀 Попадание'), 2.4),
+        "miss": (_l('💨 Мимо'), 2.4),
+        "stuck": (_l('🛑 Застрял мяч'), 4.8)
     }
     if target_code not in code_map:
         return
@@ -7937,11 +7827,11 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -7954,7 +7844,7 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await callback.message.answer("<i>Ошибка запуска баскетбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка запуска баскетбола! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_basketball_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
@@ -7962,6 +7852,7 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("basketball", "баскетбол", "баскет", "бс", "бк"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(баскетбол|basketball|баскет|бс|бк)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_basketball(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -7980,22 +7871,22 @@ async def cmd_basketball(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -8003,28 +7894,21 @@ async def cmd_basketball(message: types.Message):
         target_code, target_name, win_mult = parse_basketball_choice(choice_raw)
         if target_code is not None:
             if not update_user(user_id, balance=user_data["balance"] - bet):
-                await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
                 return
             try:
                 dice_msg = await message.answer_dice(emoji="🏀")
             except Exception:
                 user_data = get_user(user_id)
                 update_user(user_id, balance=user_data["balance"] + bet)
-                await message.answer("<i>Ошибка запуска баскетбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка запуска баскетбола! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
                 return
             asyncio.create_task(process_basketball_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"🏀 <b>Баскетбол · выбери исход!</b>\n"
-        f"<code>·····················</code>\n"
-        f"💸 <b>Ставка:</b> {format_number(bet)} m¢\n\n"
-        f"🔰 <b>Коэффициенты:</b>\n"
-        f"🏀 Попадание (х2.4)\n"
-        f"💨 Мимо (х2.4)\n"
-        f"🛑 Застрял мяч (х4.8)"
+        _lf('{0}\n🏀 <b>Баскетбол · выбери исход!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n\n🔰 <b>Коэффициенты:</b>\n🏀 Попадание (х2.4)\n💨 Мимо (х2.4)\n🛑 Застрял мяч (х4.8)', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -8034,39 +7918,43 @@ async def cmd_basketball(message: types.Message):
 
 
 
+@_localized
 def parse_football_choice(choice_text: str):
+    choice_text = _canonical_choice(choice_text, (('Гол', 'goal'), ('Мимо', 'miss')))
     t = choice_text.lower().strip()
     if t in ["гол", "попадание", "забил", "goal", "г", "1"]:
-        return "goal", "⚽️ Гол", 1.6
+        return "goal", _l('⚽️ Гол'), 1.6
     elif t in ["мимо", "промах", "штанга", "miss", "м", "0"]:
-        return "miss", "💨 Мимо", 2.4
+        return "miss", _l('💨 Мимо'), 2.4
     return None, None, None
 
 
+@_localized
 def get_football_choice_keyboard(bet: int):
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="⚽️ Гол (х1.6)", callback_data=f"fb_{bet}_goal", style="primary"),
-                InlineKeyboardButton(text="💨 Мимо (х2.4)", callback_data=f"fb_{bet}_miss", style="primary"),
+                InlineKeyboardButton(text=_l('⚽️ Гол (х1.6)'), callback_data=f"fb_{bet}_goal", style="primary"),
+                InlineKeyboardButton(text=_l('💨 Мимо (х2.4)'), callback_data=f"fb_{bet}_miss", style="primary"),
             ]
         ]
     )
 
 
+@_localized
 async def process_football_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, target_choice_code: str, target_choice_name: str, win_mult: float, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
     val = dice_msg.dice.value if (dice_msg and dice_msg.dice) else 1
 
     outcome_names = {
-        1: "💨 Мимо ворот",
-        2: "🥅 Штанга / Мимо",
-        3: "⚽️ Гол!",
-        4: "⚽️ Гол в девятку!",
-        5: "⚽️ Гол!"
+        1: _l('💨 Мимо ворот'),
+        2: _l('🥅 Штанга / Мимо'),
+        3: _l('⚽️ Гол!'),
+        4: _l('⚽️ Гол в девятку!'),
+        5: _l('⚽️ Гол!')
     }
-    outcome_str = outcome_names.get(val, "Мимо")
+    outcome_str = outcome_names.get(val, _l('Мимо'))
 
     is_win = False
     if target_choice_code == "goal" and val in [3, 4, 5]:
@@ -8090,14 +7978,7 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
         add_game_history(user_id, "football", bet, "win", win_amount)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Футбол · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'💰 <b>Выигрыш:</b> х{win_mult} / {format_number(win_amount)} m¢\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Футбол · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n💰 <b>Выигрыш:</b> х{3} / {4} m¢\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {5} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(win_mult, '', -1), _fmt(format_number(win_amount), '', -1), _fmt(outcome_str, '', -1)))
         )
     else:
         new_games = current_data["games"] + 1
@@ -8107,13 +7988,7 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
         add_game_history(user_id, "football", bet, "lose", 0)
 
         response_text = (
-            f"{user_link}\n"
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Футбол · Проигрыш!</b>\n'
-            f'<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'🎲 <b>Выбрано:</b> {target_choice_name}\n'
-            f'<code>············</code>\n'
-            f'<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {outcome_str} </blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji><b> Футбол · Проигрыш!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n🎲 <b>Выбрано:</b> {2}\n<code>············</code>\n<blockquote> <tg-emoji emoji-id="5258203794772085854">⚡️</tg-emoji> Итог: {3} </blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(_label(target_choice_name), '', -1), _fmt(outcome_str, '', -1)))
         )
 
     await message.answer(
@@ -8124,6 +7999,7 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("fb_")))
+@_localized
 async def process_football_choice_callback(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -8136,8 +8012,8 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
         return
 
     code_map = {
-        "goal": ("⚽️ Гол", 1.6),
-        "miss": ("💨 Мимо", 2.4)
+        "goal": (_l('⚽️ Гол'), 1.6),
+        "miss": (_l('💨 Мимо'), 2.4)
     }
     if target_code not in code_map:
         return
@@ -8146,11 +8022,11 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -8163,7 +8039,7 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
     except Exception:
         user_data = get_user(user_id)
         update_user(user_id, balance=user_data["balance"] + bet)
-        await callback.message.answer("<i>Ошибка запуска футбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_l('<i>Ошибка запуска футбола! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
         return
 
     asyncio.create_task(process_football_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
@@ -8171,6 +8047,7 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
 
 @dp.message(Command("football", "футбол", "фб"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(футбол|football|фб)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_football(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
@@ -8189,22 +8066,22 @@ async def cmd_football(message: types.Message):
     user_data = get_user(user_id)
     bet = resolve_bet_amount(tokens[0], user_data["balance"])
     if bet is None:
-        await message.answer("<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверный формат суммы! Пример: 100, 1.4кк, 120кк, все, пол</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet < 1:
         if user_data["balance"] < 1:
-            await message.answer("<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ваш баланс равен 0! Пополните баланс чтобы играть.</i>'), parse_mode=ParseMode.HTML)
         else:
-            await message.answer("<i>Ставка должна быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Ставка должна быть больше 0!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if bet > 300000000 and not is_admin_unlimited_bet(user_id):
-        await message.answer("<i>Максимальная ставка: 300kk m¢!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Максимальная ставка: 300kk m¢!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < bet:
-        await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     if len(tokens) >= 2:
@@ -8212,27 +8089,21 @@ async def cmd_football(message: types.Message):
         target_code, target_name, win_mult = parse_football_choice(choice_raw)
         if target_code is not None:
             if not update_user(user_id, balance=user_data["balance"] - bet):
-                await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
                 return
             try:
                 dice_msg = await message.answer_dice(emoji="⚽")
             except Exception:
                 user_data = get_user(user_id)
                 update_user(user_id, balance=user_data["balance"] + bet)
-                await message.answer("<i>Ошибка запуска футбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Ошибка запуска футбола! Ставка возвращена.</i>'), parse_mode=ParseMode.HTML)
                 return
             asyncio.create_task(process_football_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
     user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
-        f"{user_link}\n"
-        f"⚽️ <b>Футбол · выбери исход!</b>\n"
-        f"<code>·····················</code>\n"
-        f"💸 <b>Ставка:</b> {format_number(bet)} m¢\n\n"
-        f"🔰 <b>Коэффициенты:</b>\n"
-        f"⚽️ Гол (х1.6)\n"
-        f"💨 Мимо (х2.4)"
+        _lf('{0}\n⚽️ <b>Футбол · выбери исход!</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n\n🔰 <b>Коэффициенты:</b>\n⚽️ Гол (х1.6)\n💨 Мимо (х2.4)', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
     await message.answer(
         text=prompt_text,
@@ -8244,17 +8115,18 @@ async def cmd_football(message: types.Message):
 
 @dp.message(Command("promo", "промо"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^(промо|promo)\b', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_promo(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
 
-    user_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
+    user_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     parts = re.split(r'\s+', text, maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
         await message.reply(
-            f'<i>{user_link}, ты не ввел промокод <tg-emoji emoji-id="5474493399996308572">😏</tg-emoji></i>',
+            _lf('<i>{0}, ты не ввел промокод <tg-emoji emoji-id="5474493399996308572">😏</tg-emoji></i>', (_fmt(user_link, '', -1),)),
             parse_mode=ParseMode.HTML
         )
         return
@@ -8269,7 +8141,7 @@ async def cmd_promo(message: types.Message):
             cursor.execute("DELETE FROM promo_codes WHERE remaining_activations <= 0")
             conn.commit()
             await message.reply(
-                f'<i>{user_link}, такого промокода не существует! <tg-emoji emoji-id="5371074117971745503">🤡</tg-emoji></i>',
+                _lf('<i>{0}, такого промокода не существует! <tg-emoji emoji-id="5371074117971745503">🤡</tg-emoji></i>', (_fmt(user_link, '', -1),)),
                 parse_mode=ParseMode.HTML
             )
             return
@@ -8279,7 +8151,7 @@ async def cmd_promo(message: types.Message):
         cursor.execute("SELECT 1 FROM promo_activations WHERE code = ? AND user_id = ?", (real_code, user_id))
         if cursor.fetchone():
             await message.reply(
-                f'<i>{user_link}, ты уже активировал этот промокод!</i>',
+                _lf('<i>{0}, ты уже активировал этот промокод!</i>', (_fmt(user_link, '', -1),)),
                 parse_mode=ParseMode.HTML
             )
             return
@@ -8299,15 +8171,16 @@ async def cmd_promo(message: types.Message):
         update_user(user_id, balance=user_data["balance"] + reward)
 
         await message.reply(
-            f'<i>{user_link}, ты успешно активировал промокод «{html.escape(real_code)}» и получил {format_number(reward)} mCoin</i>',
+            _lf('<i>{0}, ты успешно активировал промокод «{1}» и получил {2} mCoin</i>', (_fmt(user_link, '', -1), _fmt(html.escape(real_code), '', -1), _fmt(format_number(reward), '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception as e:
-        await message.reply(f"<i>Ошибка при активации промокода: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>Ошибка при активации промокода: {0}</i>', (_fmt(html.escape(str(e)), '', -1),)), parse_mode=ParseMode.HTML)
 
 
 
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"]))
+@_localized
 async def cmd_balance(message: types.Message):
     user_id = message.from_user.id
 
@@ -8341,12 +8214,13 @@ async def cmd_balance(message: types.Message):
 
 
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower() == "бонус" and message.chat.type in ["group", "supergroup"]))
+@_localized
 async def cmd_bonus(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
 
     if not user_data:
-        await message.reply("<i>Ошибка получения данных!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка получения данных!</i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
@@ -8357,23 +8231,20 @@ async def cmd_bonus(message: types.Message):
 
     if f"@{BOT_USERNAME}" not in description and BOT_USERNAME not in description:
         text = (
-            f'<i>Чтобы получить бонус, нужно выполнить некие условия.\n'
-            '<code>·····················</code>\n'
-            f'Нужно добавить юзернейм бота в свое описание.\n'
-            f'Для продолжения нажмите ниже.</i>'
+            _lf('<i>Чтобы получить бонус, нужно выполнить некие условия.\n<code>·····················</code>\nНужно добавить юзернейм бота в свое описание.\nДля продолжения нажмите ниже.</i>', ())
         )
 
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Проверить",
+                        text=_l('Проверить'),
                         callback_data="check_bonus",
                         style="success",
                         icon_custom_emoji_id="5465368548702446780"
                     ),
                     InlineKeyboardButton(
-                        text="Туториал",
+                        text=_l('Туториал'),
                         callback_data="bonus_tutorial",
                         style="primary",
                         icon_custom_emoji_id="5471960722206366390"
@@ -8396,7 +8267,7 @@ async def cmd_bonus(message: types.Message):
                 time_left = timedelta(hours=6) - (datetime.now() - last_bonus)
                 hours = int(time_left.total_seconds() // 3600)
                 minutes = int((time_left.total_seconds() % 3600) // 60)
-                await message.reply(f"<i>Бонус можно получить только раз в 6 часов. Осталось: {hours}ч {minutes}м</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Бонус можно получить только раз в 6 часов. Осталось: {0}ч {1}м</i>', (_fmt(hours, '', -1), _fmt(minutes, '', -1))), parse_mode=ParseMode.HTML)
                 return
         except Exception:
             pass
@@ -8408,29 +8279,20 @@ async def cmd_bonus(message: types.Message):
         except Exception:
             pass
         await message.reply(
-            f'<i>🎉 Поздравляем! Вы получили бонус {format_number(bonus)} mCoin!\n'
-            f'Текущий баланс: {format_number(user_data["balance"] + bonus)} mCoin</i>',
+            _lf('<i>🎉 Поздравляем! Вы получили бонус {0} mCoin!\nТекущий баланс: {1} mCoin</i>', (_fmt(format_number(bonus), '', -1), _fmt(format_number(user_data['balance'] + bonus), '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.reply("<i>Ошибка при начислении бонуса!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Ошибка при начислении бонуса!</i>'), parse_mode=ParseMode.HTML)
 
 
 
+@_localized
 async def show_mines_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Мины — это игра, в которой вам нужно угадать пустые ячейки. Чем больше ячеек вы откроете, тем больше получите mCoin!\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х5,044,291\n'
-        'Макс. ставка: 250kk m¢\n'
-        'Макс. выигрыш: 2kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u><tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> /mines [ставка] [мины (1-6)]</u></b>\n\n'
-        'Пример: <code>/mines 100 6</code>\n'
-        'Пример: <code>Мины 1.4кк</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Мины — это игра, в которой вам нужно угадать пустые ячейки. Чем больше ячеек вы откроете, тем больше получите mCoin!\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х5,044,291\nМакс. ставка: 250kk m¢\nМакс. выигрыш: 2kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u><tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> /mines [ставка] [мины (1-6)]</u></b>\n\nПример: <code>/mines 100 6</code>\nПример: <code>Мины 1.4кк</code>', (_fmt(user_link, '', -1),))
     )
 
     await message.answer(
@@ -8440,20 +8302,12 @@ async def show_mines_info(message, user_id):
     )
 
 
+@_localized
 async def show_tower_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Башня — это игра, в которой нужно избежать мин и добраться до вершины.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х1,894,531\n'
-        'Макс. ставка: 250kk m¢\n'
-        'Макс. выигрыш: 2kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🛕 /tower [ставка] [мины (1-4)]</u></b>\n\n'
-        'Пример: <code>/tower 100 4</code>\n'
-        'Пример: <code>Башня 1.4кк</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Башня — это игра, в которой нужно избежать мин и добраться до вершины.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х1,894,531\nМакс. ставка: 250kk m¢\nМакс. выигрыш: 2kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🛕 /tower [ставка] [мины (1-4)]</u></b>\n\nПример: <code>/tower 100 4</code>\nПример: <code>Башня 1.4кк</code>', (_fmt(user_link, '', -1),))
     )
 
     await message.answer(
@@ -8463,25 +8317,12 @@ async def show_tower_info(message, user_id):
     )
 
 
+@_localized
 async def show_qwak_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Квак — режим как башня: нужно прыгать по кувшинкам и не попасть на мину. Всего 5 этажей.\n'
-        'Мины по этажам фиксированные:\n'
-        '1 этаж — 0 мин\n'
-        '2 этаж — 1 мина\n'
-        '3 этаж — 2 мины\n'
-        '4 этаж — 3 мины\n'
-        '5 этаж — 4 мины\n\n'
-        '📊 Множители:\n'
-        '1.00x / 1.21x / 2.00x / 5.05x / 25.25x\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        f'<b><u>{QWAK_PAD_EMOJI} /qwak [ставка]</u></b>\n\n'
-        'Пример: <code>/qwak 100</code>\n'
-        'Пример: <code>квак 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Квак — режим как башня: нужно прыгать по кувшинкам и не попасть на мину. Всего 5 этажей.\nМины по этажам фиксированные:\n1 этаж — 0 мин\n2 этаж — 1 мина\n3 этаж — 2 мины\n4 этаж — 3 мины\n5 этаж — 4 мины\n\n📊 Множители:\n1.00x / 1.21x / 2.00x / 5.05x / 25.25x\n\nЛимиты:\nМакс. ставка: 300kk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>{1} /qwak [ставка]</u></b>\n\nПример: <code>/qwak 100</code>\nПример: <code>квак 100</code>', (_fmt(user_link, '', -1), _fmt(QWAK_PAD_EMOJI, '', -1)))
     )
 
     await message.answer(
@@ -8491,20 +8332,12 @@ async def show_qwak_info(message, user_id):
     )
 
 
+@_localized
 async def show_diamonds_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Алмазная лихорадка — это игра, в которой необходимо угадать, в какой ячейке спрятан алмаз. Вам нужно открывать по одной ячейке на каждом из 16 уровней, чтобы найти алмаз.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х41,755,319\n'
-        'Макс. ставка: 250kk m¢\n'
-        'Макс. выигрыш: 2kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji> /diamond [ставка] [мины 1-2]</u></b>\n\n'
-        'Пример: <code>/diamond 100 2</code>\n'
-        'Пример: <code>алмазы 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Алмазная лихорадка — это игра, в которой необходимо угадать, в какой ячейке спрятан алмаз. Вам нужно открывать по одной ячейке на каждом из 16 уровней, чтобы найти алмаз.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х41,755,319\nМакс. ставка: 250kk m¢\nМакс. выигрыш: 2kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji> /diamond [ставка] [мины 1-2]</u></b>\n\nПример: <code>/diamond 100 2</code>\nПример: <code>алмазы 100</code>', (_fmt(user_link, '', -1),))
     )
 
     await message.answer(
@@ -8514,24 +8347,16 @@ async def show_diamonds_info(message, user_id):
     )
 
 
+@_localized
 async def show_twentyone_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> 21 (Очко) — карточная игра, в которой цель игрока — набрать сумму очков ближе к 21, чем у дилера, не превышая это число. Карты от 2 до 10 считаются по номиналу, валет даёт 2 очка, дама — 3 очка, король — 4 очка, туз — 11 или 1, в зависимости от ситуации. Если сумма больше 21 — перебор.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х1.97\n'
-        'Макс. ставка: 500kk m¢\n'
-        'Макс. выигрыш: 1kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u><tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji> /21 [ставка]</u></b>\n\n'
-        'Пример: <code>/21 100</code>\n'
-        'Пример: <code>очко 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> 21 (Очко) — карточная игра, в которой цель игрока — набрать сумму очков ближе к 21, чем у дилера, не превышая это число. Карты от 2 до 10 считаются по номиналу, валет даёт 2 очка, дама — 3 очка, король — 4 очка, туз — 11 или 1, в зависимости от ситуации. Если сумма больше 21 — перебор.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х1.97\nМакс. ставка: 500kk m¢\nМакс. выигрыш: 1kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u><tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji> /21 [ставка]</u></b>\n\nПример: <code>/21 100</code>\nПример: <code>очко 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8540,7 +8365,7 @@ async def show_twentyone_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_modes",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8573,29 +8398,22 @@ async def show_twentyone_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_twentyone"))
+@_localized
 async def process_info_twentyone(callback: types.CallbackQuery):
     await callback.answer()
     await show_twentyone_info(callback, callback.from_user.id, is_callback=True)
 
 
+@_localized
 async def show_crash_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Краш — это игра, в которой нужно выбрать множитель от x1.01 до x100k. Бот случайно останавливается от x1 до x100k.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х100,000\n'
-        'Макс. ставка: 200kk m¢\n'
-        'Макс. выигрыш: 2kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>📈 /crash [ставка] [1.01-100к]</u></b>\n\n'
-        'Пример: <code>/crash 100 1.1</code>\n'
-        'Пример: <code>краш 100 4</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Краш — это игра, в которой нужно выбрать множитель от x1.01 до x100k. Бот случайно останавливается от x1 до x100k.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х100,000\nМакс. ставка: 200kk m¢\nМакс. выигрыш: 2kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>📈 /crash [ставка] [1.01-100к]</u></b>\n\nПример: <code>/crash 100 1.1</code>\nПример: <code>краш 100 4</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8604,7 +8422,7 @@ async def show_crash_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8636,24 +8454,16 @@ async def show_crash_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_slots_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Слоты — это игра, где цель выбить три одинаковых символа на барабанах, запустив их вращение.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х15.5\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 3kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎰 /slots [ставка]</u></b>\n\n'
-        'Пример: <code>/slots 100</code>\n'
-        'Пример: <code>слоты 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Слоты — это игра, где цель выбить три одинаковых символа на барабанах, запустив их вращение.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х15.5\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 3kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎰 /slots [ставка]</u></b>\n\nПример: <code>/slots 100</code>\nПример: <code>слоты 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8662,7 +8472,7 @@ async def show_slots_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8694,24 +8504,16 @@ async def show_slots_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_bowling_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Боулинг — это игра, в которой вам нужно сбить кегли, чтобы получить максимальный множитель.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х5.8\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎳 /bowling [ставка]</u></b>\n\n'
-        'Пример: <code>/bowling 100</code>\n'
-        'Пример: <code>боулинг 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Боулинг — это игра, в которой вам нужно сбить кегли, чтобы получить максимальный множитель.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х5.8\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎳 /bowling [ставка]</u></b>\n\nПример: <code>/bowling 100</code>\nПример: <code>боулинг 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8720,7 +8522,7 @@ async def show_bowling_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8752,29 +8554,16 @@ async def show_bowling_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_dice_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Кубик — быстрая игра на Telegram-кубике 🎲. Выберите точное число или исход броска.\n'
-        '📊 Множители:\n'
-        '1 / 2 / 3 / 4 / 5 / 6 — х5.8\n'
-        'Больше 3-х — х1.97\n'
-        'Меньше 3-х — х2.32\n'
-        'Равно 3 — х5.8\n'
-        'Чёт / Нечёт — х2.23\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎲 /dice [ставка] [исход]</u></b>\n\n'
-        'Пример: <code>/dice 100 чёт</code>\n'
-        'Пример: <code>кубик 100 больше 3</code>\n'
-        'Пример: <code>кубик 100</code> — выбрать исход кнопками'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Кубик — быстрая игра на Telegram-кубике 🎲. Выберите точное число или исход броска.\n📊 Множители:\n1 / 2 / 3 / 4 / 5 / 6 — х5.8\nБольше 3-х — х1.97\nМеньше 3-х — х2.32\nРавно 3 — х5.8\nЧёт / Нечёт — х2.23\n\nЛимиты:\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎲 /dice [ставка] [исход]</u></b>\n\nПример: <code>/dice 100 чёт</code>\nПример: <code>кубик 100 больше 3</code>\nПример: <code>кубик 100</code> — выбрать исход кнопками', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8783,7 +8572,7 @@ async def show_dice_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8815,26 +8604,16 @@ async def show_dice_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_coin_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Монетка — быстрая игра Орёл/Решка. Выберите сторону, бот подбросит монету стикером и через 5 секунд покажет итог.\n'
-        '📊 Множители:\n'
-        'Орёл — х1.97\n'
-        'Решка — х1.97\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🪙 /coin [ставка] [орёл/решка]</u></b>\n\n'
-        'Пример: <code>/coin 100 орёл</code>\n'
-        'Пример: <code>монета 100 р</code>\n'
-        'Пример: <code>монета 100</code> — выбрать сторону кнопками'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Монетка — быстрая игра Орёл/Решка. Выберите сторону, бот подбросит монету стикером и через 5 секунд покажет итог.\n📊 Множители:\nОрёл — х1.97\nРешка — х1.97\n\nЛимиты:\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🪙 /coin [ставка] [орёл/решка]</u></b>\n\nПример: <code>/coin 100 орёл</code>\nПример: <code>монета 100 р</code>\nПример: <code>монета 100</code> — выбрать сторону кнопками', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8843,7 +8622,7 @@ async def show_coin_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8875,29 +8654,16 @@ async def show_coin_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_roulette_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Рулетка — режим игры с 37 числами: 0-36. Выберите число, цвет, ряд, дюжину, блок или стрит.\n'
-        '📊 Множители:\n'
-        'Число — х35\n'
-        'Красный / Чёрный / Чёт / Нечёт / Малые / Большие — х1.97\n'
-        'Дюжины и ряды — х2.9\n'
-        'Блоки — х8.7\n'
-        'Стрит — х11.6\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 10.5kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎱 /roulette [ставка] [исход]</u></b>\n\n'
-        'Пример: <code>рулетка 100 ч</code> — чёрный\n'
-        'Пример: <code>рулетка 1кк 1,2,3</code> — стрит\n'
-        'Пример: <code>рулетка пол</code> — выбрать исход кнопками'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Рулетка — режим игры с 37 числами: 0-36. Выберите число, цвет, ряд, дюжину, блок или стрит.\n📊 Множители:\nЧисло — х35\nКрасный / Чёрный / Чёт / Нечёт / Малые / Большие — х1.97\nДюжины и ряды — х2.9\nБлоки — х8.7\nСтрит — х11.6\n\nЛимиты:\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 10.5kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎱 /roulette [ставка] [исход]</u></b>\n\nПример: <code>рулетка 100 ч</code> — чёрный\nПример: <code>рулетка 1кк 1,2,3</code> — стрит\nПример: <code>рулетка пол</code> — выбрать исход кнопками', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8906,7 +8672,7 @@ async def show_roulette_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_modes",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8938,23 +8704,16 @@ async def show_roulette_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_chest_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Сундук — быстрая игра, где нужно выбрать один из 9 ящиков.\n'
-        'В одном ящике лежит приз x3, в двух ящиках — x1, остальные пустые x0.\n\n'
-        '📊 Лимиты:\n'
-        'Макс. множитель: х3\n'
-        'Макс. ставка: 300kk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🧰 /chest [ставка]</u></b>\n\n'
-        'Пример: <code>/chest 100</code>\n'
-        'Пример: <code>сундук 10</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Сундук — быстрая игра, где нужно выбрать один из 9 ящиков.\nВ одном ящике лежит приз x3, в двух ящиках — x1, остальные пустые x0.\n\n📊 Лимиты:\nМакс. множитель: х3\nМакс. ставка: 300kk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🧰 /chest [ставка]</u></b>\n\nПример: <code>/chest 100</code>\nПример: <code>сундук 10</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -8963,7 +8722,7 @@ async def show_chest_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -8995,24 +8754,16 @@ async def show_chest_info(message_or_callback, user_id, is_callback=False):
             )
 
 
+@_localized
 async def show_scratch_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Скретч — быстрая лотерейка на 6 ячеек. Открывайте клетки по одной или сразу всё поле.\n'
-        '📊 Комбинации:\n'
-        '3 вишни — х2\n'
-        '3 алмаза — х10\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎫 /scratch [ставка]</u></b>\n\n'
-        'Пример: <code>/scratch 100</code>\n'
-        'Пример: <code>скретч 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Скретч — быстрая лотерейка на 6 ячеек. Открывайте клетки по одной или сразу всё поле.\n📊 Комбинации:\n3 вишни — х2\n3 алмаза — х10\n\nЛимиты:\nМакс. ставка: 300kk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎫 /scratch [ставка]</u></b>\n\nПример: <code>/scratch 100</code>\nПример: <code>скретч 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -9021,7 +8772,7 @@ async def show_scratch_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -9038,26 +8789,16 @@ async def show_scratch_info(message_or_callback, user_id, is_callback=False):
             await message_or_callback.message.answer(text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
 
 
+@_localized
 async def show_fishing_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Рыбалка — быстрая игра: забросьте удочку и получите случайный улов.\n'
-        '📊 Исходы:\n'
-        'Рыба — х2\n'
-        'Рыба сорвалась — х0\n'
-        'Банка — х0.08\n'
-        'Банка — х0.5\n\n'
-        'Лимиты:\n'
-        'Макс. ставка: 300kk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎣 /fishing [ставка]</u></b>\n\n'
-        'Пример: <code>/fishing 100</code>\n'
-        'Пример: <code>рыбалка 10</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Рыбалка — быстрая игра: забросьте удочку и получите случайный улов.\n📊 Исходы:\nРыба — х2\nРыба сорвалась — х0\nБанка — х0.08\nБанка — х0.5\n\nЛимиты:\nМакс. ставка: 300kk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎣 /fishing [ставка]</u></b>\n\nПример: <code>/fishing 100</code>\nПример: <code>рыбалка 10</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -9066,7 +8807,7 @@ async def show_fishing_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -9100,6 +8841,7 @@ async def show_fishing_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "catalog_main"))
+@_localized
 async def process_catalog_main(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
@@ -9107,6 +8849,7 @@ async def process_catalog_main(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "catalog_fast"))
+@_localized
 async def process_catalog_fast(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
@@ -9114,6 +8857,7 @@ async def process_catalog_fast(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "catalog_modes"))
+@_localized
 async def process_catalog_modes(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
@@ -9121,71 +8865,71 @@ async def process_catalog_modes(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_slots"))
+@_localized
 async def process_info_slots(callback: types.CallbackQuery):
     await callback.answer()
     await show_slots_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_chest"))
+@_localized
 async def process_info_chest(callback: types.CallbackQuery):
     await callback.answer()
     await show_chest_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_fishing"))
+@_localized
 async def process_info_fishing(callback: types.CallbackQuery):
     await callback.answer()
     await show_fishing_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_scratch"))
+@_localized
 async def process_info_scratch(callback: types.CallbackQuery):
     await callback.answer()
     await show_scratch_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_bowling"))
+@_localized
 async def process_info_bowling(callback: types.CallbackQuery):
     await callback.answer()
     await show_bowling_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_dice"))
+@_localized
 async def process_info_dice(callback: types.CallbackQuery):
     await callback.answer()
     await show_dice_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_coin"))
+@_localized
 async def process_info_coin(callback: types.CallbackQuery):
     await callback.answer()
     await show_coin_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_roulette"))
+@_localized
 async def process_info_roulette(callback: types.CallbackQuery):
     await callback.answer()
     await show_roulette_info(callback, callback.from_user.id, is_callback=True)
 
 
+@_localized
 async def show_darts_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Дартс — это игра, в которой нужно попасть в центр мишени, чтобы получить максимальный множитель.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~97%\n'
-        'Макс. множитель: х5.8\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🎯 /darts [ставка]</u></b>\n\n'
-        'Пример: <code>/darts 100</code>\n'
-        'Пример: <code>дартс 100 мимо</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Дартс — это игра, в которой нужно попасть в центр мишени, чтобы получить максимальный множитель.\n📊 Лимиты:\nRTP: ~97%\nМакс. множитель: х5.8\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 1.74kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🎯 /darts [ставка]</u></b>\n\nПример: <code>/darts 100</code>\nПример: <code>дартс 100 мимо</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -9194,7 +8938,7 @@ async def show_darts_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -9227,29 +8971,22 @@ async def show_darts_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_darts"))
+@_localized
 async def process_info_darts(callback: types.CallbackQuery):
     await callback.answer()
     await show_darts_info(callback, callback.from_user.id, is_callback=True)
 
 
+@_localized
 async def show_basketball_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Баскетбол — это игра, где нужно попасть в кольцо, чтобы получить максимальный множитель.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~96%\n'
-        'Макс. множитель: х4.8\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 1.44kkk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>🏀 /basketball [ставка]</u></b>\n\n'
-        'Пример: <code>/basketball 100</code>\n'
-        'Пример: <code>баскетбол 100</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Баскетбол — это игра, где нужно попасть в кольцо, чтобы получить максимальный множитель.\n📊 Лимиты:\nRTP: ~96%\nМакс. множитель: х4.8\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 1.44kkk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>🏀 /basketball [ставка]</u></b>\n\nПример: <code>/basketball 100</code>\nПример: <code>баскетбол 100</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -9258,7 +8995,7 @@ async def show_basketball_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -9291,29 +9028,22 @@ async def show_basketball_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_basketball"))
+@_localized
 async def process_info_basketball(callback: types.CallbackQuery):
     await callback.answer()
     await show_basketball_info(callback, callback.from_user.id, is_callback=True)
 
 
+@_localized
 async def show_football_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        user_name = "Игрок"
+        user_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
 
     text = (
-        '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Футбол — это игра, в которой нужно предсказать, попадет ли мяч в ворота или пролетит мимо, чтобы получить выигрыш.\n'
-        '📊 Лимиты:\n'
-        'RTP: ~96%\n'
-        'Макс. множитель: х2.4\n'
-        'Макс. ставка: 300kk m¢\n'
-        'Макс. выигрыш: 720kk m¢</i></blockquote>\n\n'
-        f'<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {user_link}, чтобы начать игру, используй команду:</i>\n\n'
-        '<b><u>⚽️ /football [ставка] [гол/мимо]</u></b>\n\n'
-        'Пример: <code>/football 100</code>\n'
-        'Пример: <code>футбол 100 гол</code>'
+        _lf('<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Футбол — это игра, в которой нужно предсказать, попадет ли мяч в ворота или пролетит мимо, чтобы получить выигрыш.\n📊 Лимиты:\nRTP: ~96%\nМакс. множитель: х2.4\nМакс. ставка: 300kk m¢\nМакс. выигрыш: 720kk m¢</i></blockquote>\n\n<i><tg-emoji emoji-id="5372981976804366741">🤖</tg-emoji> {0}, чтобы начать игру, используй команду:</i>\n\n<b><u>⚽️ /football [ставка] [гол/мимо]</u></b>\n\nПример: <code>/football 100</code>\nПример: <code>футбол 100 гол</code>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = None
@@ -9322,7 +9052,7 @@ async def show_football_info(message_or_callback, user_id, is_callback=False):
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data="catalog_fast",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -9355,18 +9085,21 @@ async def show_football_info(message_or_callback, user_id, is_callback=False):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_football"))
+@_localized
 async def process_info_football(callback: types.CallbackQuery):
     await callback.answer()
     await show_football_info(callback, callback.from_user.id, is_callback=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "info_crash"))
+@_localized
 async def process_info_crash(callback: types.CallbackQuery):
     await callback.answer()
     await show_crash_info(callback, callback.from_user.id, is_callback=True)
 
 
 
+@_localized
 async def start_mines_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -9377,7 +9110,7 @@ async def start_mines_game_from_command(message, user_id, chat_id, bet, mine_cou
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now = datetime.now()
@@ -9412,10 +9145,11 @@ async def start_mines_game_from_command(message, user_id, chat_id, bet, mine_cou
     await show_mines_grid_from_message(message, user_id, game_id)
 
 
+@_localized
 async def show_mines_grid_from_message(message, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await message.answer("<i>Игра не найдена!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Игра не найдена!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if game["owner_id"] != user_id:
@@ -9428,7 +9162,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
     multiplier = get_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -9445,47 +9179,24 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Мины · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {len(revealed) - 1} из {TOTAL_CELLS - mine_count}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Мины · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(len(revealed) - 1, '', -1), _fmt(TOTAL_CELLS - mine_count, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Мины · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {len(revealed)} из {TOTAL_CELLS - mine_count}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Мины · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(len(revealed), '', -1), _fmt(TOTAL_CELLS - mine_count, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         multiplier = get_multiplier(mine_count, level)
 
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5247011187308140698">🧨</tg-emoji>Мины • начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5247011187308140698">🧨</tg-emoji>Мины • начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             win_amount = int(bet * multiplier)
             next_multiplier = get_multiplier(mine_count, level + 1)
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💎</tg-emoji>Мины • игра идёт.</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{next_multiplier:.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💎</tg-emoji>Мины • игра идёт.</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x / {4} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1), _fmt(next_multiplier, f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -9553,7 +9264,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_game_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -9562,7 +9273,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
         if len(revealed) > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -9571,7 +9282,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
         else:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"exit_game_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -9604,6 +9315,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
 
 
 
+@_localized
 async def start_tower_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -9614,7 +9326,7 @@ async def start_tower_game_from_command(message, user_id, chat_id, bet, mine_cou
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now = datetime.now()
@@ -9649,10 +9361,11 @@ async def start_tower_game_from_command(message, user_id, chat_id, bet, mine_cou
     await show_tower_grid_from_message(message, user_id, game_id)
 
 
+@_localized
 async def show_tower_grid_from_message(message, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await message.answer("<i>Игра не найдена!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Игра не найдена!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if game["owner_id"] != user_id:
@@ -9666,7 +9379,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
     exploded_mine = game.get("exploded_mine")
     hide_demo_mines = bool(game.get("demo_mode") or DEMO_GAME_CONTEXT.get())
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
     multiplier = get_tower_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -9683,43 +9396,20 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Башня · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Башня · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Башня · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Башня · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b>🛕Башня · начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_tower_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b>🛕Башня · начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_tower_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             text = (
-                f'{user_link}\n'
-                '<b>🛕Башня · игра идёт.</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_tower_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b>🛕Башня · игра идёт.</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(get_tower_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -9797,7 +9487,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_tower_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -9806,7 +9496,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
         if level > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"tower_cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -9814,7 +9504,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
             ])
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_tower_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -9866,6 +9556,7 @@ def get_qwak_current_col(game: dict):
     return QWAK_START_COL
 
 
+@_localized
 def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game_over=False, won=False):
     user_name = get_user_display_name(user_id, user_name)
     bet = game["bet"]
@@ -9874,7 +9565,7 @@ def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game
     level = int(game.get("level", 1) or 1)
     exploded_mine = game.get("exploded_mine")
 
-    clean_user_name = html.escape(user_name or "Игрок")
+    clean_user_name = html.escape(user_name or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_qwak_multiplier(level)
     win_amount = int(bet * multiplier)
@@ -9882,25 +9573,19 @@ def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game
     next_win = int(bet * next_mult)
 
     if game_over and exploded_mine is not None:
-        title = '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Квак · Проигрыш!</b>'
+        title = _l('<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Квак · Проигрыш!</b>')
         body = (
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'{QWAK_PAD_EMOJI} <b>Этаж:</b> {min(level, QWAK_ROWS)} из {QWAK_ROWS}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {0} m¢\n{1} <b>Этаж:</b> {2} из {3}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{4}x / {5} m¢</i></blockquote>', (_fmt(format_number(bet), '', -1), _fmt(QWAK_PAD_EMOJI, '', -1), _fmt(min(level, QWAK_ROWS), '', -1), _fmt(QWAK_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
-        title = '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Квак · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>'
+        title = _l('<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Квак · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>')
         body = (
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'{QWAK_PAD_EMOJI} <b>Этаж:</b> {min(level, QWAK_ROWS)} из {QWAK_ROWS}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {0} m¢\n{1} <b>Этаж:</b> {2} из {3}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{4}x / {5} m¢', (_fmt(format_number(bet), '', -1), _fmt(QWAK_PAD_EMOJI, '', -1), _fmt(min(level, QWAK_ROWS), '', -1), _fmt(QWAK_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
-        title = f'{QWAK_PAD_EMOJI}<b>Квак · начни игру!</b>' if level <= 1 else f'{QWAK_PAD_EMOJI}<b>Квак · игра идёт.</b>'
+        title = _lf('{0}<b>Квак · начни игру!</b>', (_fmt(QWAK_PAD_EMOJI, '', -1),)) if level <= 1 else _lf('{0}<b>Квак · игра идёт.</b>', (_fmt(QWAK_PAD_EMOJI, '', -1),))
         body = (
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'{QWAK_PAD_EMOJI} <b>Этаж:</b> {level} из {QWAK_ROWS}\n'
-            f'<blockquote>{QWAK_PAD_EMOJI} Сл. кувшин: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{next_mult:.2f}x / {format_number(next_win)} m¢</blockquote>'
+            _lf('<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {0} m¢\n{1} <b>Этаж:</b> {2} из {3}\n<blockquote>{4} Сл. кувшин: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</blockquote>', (_fmt(format_number(bet), '', -1), _fmt(QWAK_PAD_EMOJI, '', -1), _fmt(level, '', -1), _fmt(QWAK_ROWS, '', -1), _fmt(QWAK_PAD_EMOJI, '', -1), _fmt(next_mult, f'.2f', -1), _fmt(format_number(next_win), '', -1)))
         )
 
     text = (
@@ -9966,19 +9651,20 @@ def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game
     keyboard = InlineKeyboardMarkup(inline_keyboard=grid_buttons)
     if game_over or won:
         keyboard.inline_keyboard.append([
-            InlineKeyboardButton(text="Назад", callback_data=f"exit_qwak_{game_id}", icon_custom_emoji_id="5255703720078879038")
+            InlineKeyboardButton(text=_l('Назад'), callback_data=f"exit_qwak_{game_id}", icon_custom_emoji_id="5255703720078879038")
         ])
     else:
         if level > 1:
             keyboard.inline_keyboard.append([
-                InlineKeyboardButton(text="Забрать выигрыш", callback_data=f"qwak_cashout_{game_id}", style="success", icon_custom_emoji_id="5427009714745517609")
+                InlineKeyboardButton(text=_l('Забрать выигрыш'), callback_data=f"qwak_cashout_{game_id}", style="success", icon_custom_emoji_id="5427009714745517609")
             ])
         keyboard.inline_keyboard.append([
-            InlineKeyboardButton(text="Назад", callback_data=f"exit_qwak_{game_id}", icon_custom_emoji_id="5255703720078879038")
+            InlineKeyboardButton(text=_l('Назад'), callback_data=f"exit_qwak_{game_id}", icon_custom_emoji_id="5255703720078879038")
         ])
     return text, keyboard
 
 
+@_localized
 async def start_qwak_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -9989,7 +9675,7 @@ async def start_qwak_game_from_command(message, user_id, chat_id, bet):
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now = datetime.now()
@@ -10024,10 +9710,11 @@ async def start_qwak_game_from_command(message, user_id, chat_id, bet):
     await show_qwak_grid_from_message(message, user_id, game_id)
 
 
+@_localized
 async def show_qwak_grid_from_message(message, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await message.answer("<i>Игра не найдена!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Игра не найдена!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if game["owner_id"] != user_id:
@@ -10049,7 +9736,7 @@ async def show_qwak_grid_from_message(message, user_id, game_id, game_over=False
             update_user(user_id, games=user_data["games"] + 1, balance=user_data["balance"] + win_amount)
             add_game_history(user_id, "qwak", game["bet"], "win", win_amount, game.get("created_at_str"))
 
-    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, message.from_user.first_name) or "Игрок", game_id, game, game_over=game_over, won=won)
+    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок'), game_id, game, game_over=game_over, won=won)
 
     msg = None
     try:
@@ -10066,10 +9753,11 @@ async def show_qwak_grid_from_message(message, user_id, game_id, game_over=False
     _remember_message(game_messages, key, msg.message_id)
 
 
+@_localized
 async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
@@ -10091,7 +9779,7 @@ async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=Fal
             update_user(user_id, games=user_data["games"] + 1, balance=user_data["balance"] + win_amount)
             add_game_history(user_id, "qwak", game["bet"], "win", win_amount, game.get("created_at_str"))
 
-    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, callback.from_user.first_name) or "Игрок", game_id, game, game_over=game_over, won=won)
+    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, callback.from_user.first_name) or _l('Игрок'), game_id, game, game_over=game_over, won=won)
 
     msg = None
     try:
@@ -10109,6 +9797,7 @@ async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=Fal
 
 
 
+@_localized
 async def start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -10119,7 +9808,7 @@ async def start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now = datetime.now()
@@ -10154,10 +9843,11 @@ async def start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_
     await show_diamonds_grid_from_message(message, user_id, game_id)
 
 
+@_localized
 async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await message.answer("<i>Игра не найдена!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Игра не найдена!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if game["owner_id"] != user_id:
@@ -10170,7 +9860,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
+    user_link = _lf('<a href="tg://user?id={0}">{1}</a>', (_fmt(user_id, '', -1), _fmt(html.escape(get_user_display_name(user_id, message.from_user.first_name) or _l('Игрок')), '', -1)))
     multiplier = get_diamonds_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -10187,45 +9877,22 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Алмазы · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {DIAMONDS_ROWS}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Алмазы · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(DIAMONDS_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Алмазы · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {DIAMONDS_ROWS}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Алмазы · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(DIAMONDS_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_diamonds_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_diamonds_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             win_amount = int(bet * multiplier)
             next_multiplier = get_diamonds_multiplier(mine_count, level + 1)
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · игра идёт!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{next_multiplier:.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · игра идёт!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x / {4} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1), _fmt(next_multiplier, f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -10302,7 +9969,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_diamonds_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -10311,7 +9978,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
         if level > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"diamonds_cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -10319,7 +9986,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
             ])
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_diamonds_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -10353,6 +10020,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "tower"))
+@_localized
 async def process_tower_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -10391,14 +10059,11 @@ async def process_tower_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '🛕<b>Башня · выбери количество мин!</b>\n'
-        '<code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢'
+        _lf('{0}\n🛕<b>Башня · выбери количество мин!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢', (_fmt(user_link, '', -1),))
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -10411,7 +10076,7 @@ async def process_tower_start(callback: types.CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"tower_back_to_catalog_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -10434,33 +10099,34 @@ async def process_tower_start(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_count_")))
+@_localized
 async def process_tower_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-2])
         count = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "select_mines":
-        await callback.answer("Выберите количество мин!", show_alert=True)
+        await callback.answer(_l('Выберите количество мин!'), show_alert=True)
         return
 
     await callback.answer()
@@ -10498,11 +10164,12 @@ async def process_tower_count(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_cell_")))
+@_localized
 async def process_tower_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 4:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
@@ -10510,26 +10177,26 @@ async def process_tower_cell_click(callback: types.CallbackQuery):
         target_row = int(data[-2])
         cell_idx = int(data[-1])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["stage"] != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     current_level = game["level"]
@@ -10540,7 +10207,7 @@ async def process_tower_cell_click(callback: types.CallbackQuery):
     global_idx = current_level * TOWER_COLS + cell_idx
 
     if global_idx in game["revealed"]:
-        await callback.answer("Эта клетка уже открыта!", show_alert=True)
+        await callback.answer(_l('Эта клетка уже открыта!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -10592,10 +10259,11 @@ async def process_tower_cell_click(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
+@_localized
 async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
@@ -10609,7 +10277,7 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
     exploded_mine = game.get("exploded_mine")
     hide_demo_mines = bool(game.get("demo_mode") or DEMO_GAME_CONTEXT.get())
 
-    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_tower_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -10627,43 +10295,20 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Башня · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Башня · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Башня · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Башня · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b>🛕Башня · начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_tower_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b>🛕Башня · начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_tower_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             text = (
-                f'{user_link}\n'
-                '<b>🛕Башня · игра идёт.</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {TOWER_ROWS}\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_tower_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b>🛕Башня · игра идёт.</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(TOWER_ROWS, '', -1), _fmt(get_tower_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -10741,7 +10386,7 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_tower_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -10750,7 +10395,7 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
         if level > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"tower_cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -10758,7 +10403,7 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
             ])
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_tower_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -10791,40 +10436,41 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_cashout_")))
+@_localized
 async def process_tower_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена!", show_alert=True)
+        await callback.answer(_l('Игра уже завершена!'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if game["level"] == 0:
-        await callback.answer("Откройте хотя бы одну клетку!", show_alert=True)
+        await callback.answer(_l('Откройте хотя бы одну клетку!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -10849,36 +10495,37 @@ async def process_tower_cashout(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_tower_")))
+@_localized
 async def process_exit_tower(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("bet_placed", False) or len(game.get("revealed", set())) > 0 or game.get("level", 0) > 0:
-        await callback.answer("Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».'), show_alert=True)
         return
 
     key = f"exit_{user_id}_{game_id}"
@@ -10903,31 +10550,32 @@ async def process_exit_tower(callback: types.CallbackQuery):
             remove_active_game_from_db(game_id)
 
             await callback.message.edit_text(
-                f'<i>✅ Игра отменена. Ставка {format_number(game["bet"])} mCoin возвращена на баланс.</i>',
+                _lf('<i>✅ Игра отменена. Ставка {0} mCoin возвращена на баланс.</i>', (_fmt(format_number(game['bet']), '', -1),)),
                 parse_mode=ParseMode.HTML
             )
 
-            await callback.answer("Игра отменена!")
+            await callback.answer(_l('Игра отменена!'))
             return
         else:
             del exit_confirm[key]
 
     exit_confirm[key] = current_time
-    await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
+    await callback.answer(_l('⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("tower_back_to_catalog_")))
+@_localized
 async def process_tower_back_to_catalog(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -10958,6 +10606,7 @@ async def process_tower_back_to_catalog(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "qwak"))
+@_localized
 async def process_qwak_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -10966,7 +10615,7 @@ async def process_qwak_start(callback: types.CallbackQuery):
     bet = 10
     user_data = get_user(user_id)
     if user_data["balance"] < bet:
-        await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
+        await callback.message.answer(_lf('<i>Недостаточно средств! Ваш баланс: {0} mCoin</i>', (_fmt(format_number(user_data['balance']), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     key = get_chat_key(user_id, chat_id)
@@ -10983,10 +10632,11 @@ async def process_qwak_start(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("qwak_cell_")))
+@_localized
 async def process_qwak_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 4:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
@@ -10994,25 +10644,25 @@ async def process_qwak_cell_click(callback: types.CallbackQuery):
         target_row = int(data[-2])
         cell_idx = int(data[-1])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     current_level = int(game.get("level", 1) or 1)
@@ -11022,7 +10672,7 @@ async def process_qwak_cell_click(callback: types.CallbackQuery):
 
     global_idx = current_level * QWAK_COLS + cell_idx
     if global_idx in game.get("revealed", set()):
-        await callback.answer("Эта клетка уже открыта!", show_alert=True)
+        await callback.answer(_l('Эта клетка уже открыта!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -11064,33 +10714,34 @@ async def process_qwak_cell_click(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("qwak_cashout_")))
+@_localized
 async def process_qwak_cashout(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена!", show_alert=True)
+        await callback.answer(_l('Игра уже завершена!'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if int(game.get("level", 1) or 1) <= 1:
-        await callback.answer("Сделайте хотя бы один прыжок!", show_alert=True)
+        await callback.answer(_l('Сделайте хотя бы один прыжок!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -11112,11 +10763,12 @@ async def process_qwak_cashout(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_qwak_")))
+@_localized
 async def process_exit_qwak(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -11130,7 +10782,7 @@ async def process_exit_qwak(callback: types.CallbackQuery):
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False) or game.get("settled", False):
@@ -11144,7 +10796,7 @@ async def process_exit_qwak(callback: types.CallbackQuery):
         return
 
     if game.get("bet_placed", False) or int(game.get("level", 1) or 1) > 1:
-        await callback.answer("Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».'), show_alert=True)
         return
 
     key = f"exit_qwak_{user_id}_{game_id}"
@@ -11167,52 +10819,53 @@ async def process_exit_qwak(callback: types.CallbackQuery):
             if key in exit_confirm:
                 del exit_confirm[key]
             remove_active_game_from_db(game_id)
-            await callback.answer("Игра отменена!")
+            await callback.answer(_l('Игра отменена!'))
             return
         else:
             del exit_confirm[key]
 
     exit_confirm[key] = current_time
-    await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
+    await callback.answer(_l('⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.'), show_alert=True)
 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("cell_")))
+@_localized
 async def process_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[1])
         cell_idx = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["stage"] != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if cell_idx in game["revealed"]:
-        await callback.answer("Эта клетка уже открыта!", show_alert=True)
+        await callback.answer(_l('Эта клетка уже открыта!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -11253,10 +10906,11 @@ async def process_cell_click(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
+@_localized
 async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
@@ -11269,7 +10923,7 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -11287,47 +10941,24 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Мины · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {len(revealed) - 1} из {TOTAL_CELLS - mine_count}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Мины · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(len(revealed) - 1, '', -1), _fmt(TOTAL_CELLS - mine_count, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Мины · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {len(revealed)} из {TOTAL_CELLS - mine_count}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Мины · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Открыто:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(len(revealed), '', -1), _fmt(TOTAL_CELLS - mine_count, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         multiplier = get_multiplier(mine_count, level)
 
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5247011187308140698">🧨</tg-emoji>Мины • начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5247011187308140698">🧨</tg-emoji>Мины • начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             win_amount = int(bet * multiplier)
             next_multiplier = get_multiplier(mine_count, level + 1)
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💎</tg-emoji>Мины • игра идёт.</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{next_multiplier:.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💎</tg-emoji>Мины • игра идёт.</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x / {4} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1), _fmt(next_multiplier, f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -11395,7 +11026,7 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_game_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -11404,7 +11035,7 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
         if len(revealed) > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -11413,7 +11044,7 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
         else:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"exit_game_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -11446,40 +11077,41 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("cashout_")))
+@_localized
 async def process_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 2:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена!", show_alert=True)
+        await callback.answer(_l('Игра уже завершена!'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if len(game["revealed"]) == 0:
-        await callback.answer("Откройте хотя бы одну клетку!", show_alert=True)
+        await callback.answer(_l('Откройте хотя бы одну клетку!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -11504,36 +11136,37 @@ async def process_cashout(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_game_")))
+@_localized
 async def process_exit_game(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("bet_placed", False) or len(game.get("revealed", set())) > 0 or game.get("level", 0) > 0:
-        await callback.answer("Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».'), show_alert=True)
         return
 
     key = f"exit_{user_id}_{game_id}"
@@ -11558,47 +11191,48 @@ async def process_exit_game(callback: types.CallbackQuery):
             remove_active_game_from_db(game_id)
 
             await callback.message.edit_text(
-                f'<i>✅ Игра отменена. Ставка {format_number(game["bet"])} mCoin возвращена на баланс.</i>',
+                _lf('<i>✅ Игра отменена. Ставка {0} mCoin возвращена на баланс.</i>', (_fmt(format_number(game['bet']), '', -1),)),
                 parse_mode=ParseMode.HTML
             )
 
-            await callback.answer("Игра отменена!")
+            await callback.answer(_l('Игра отменена!'))
             return
         else:
             del exit_confirm[key]
 
     exit_confirm[key] = current_time
-    await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
+    await callback.answer(_l('⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("mines_count_")))
+@_localized
 async def process_mines_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-2])
         count = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "select_mines":
-        await callback.answer("Выберите количество мин!", show_alert=True)
+        await callback.answer(_l('Выберите количество мин!'), show_alert=True)
         return
 
     await callback.answer()
@@ -11636,17 +11270,18 @@ async def process_mines_count(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("back_to_catalog_")))
+@_localized
 async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -11676,6 +11311,7 @@ async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "mines"))
+@_localized
 async def process_mines_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -11714,14 +11350,11 @@ async def process_mines_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji><b>Мины • выбери мины!</b>\n'
-        '<code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢'
+        _lf('{0}\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji><b>Мины • выбери мины!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢', (_fmt(user_link, '', -1),))
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -11738,7 +11371,7 @@ async def process_mines_start(callback: types.CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"back_to_catalog_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -11762,6 +11395,7 @@ async def process_mines_start(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "diamonds"))
+@_localized
 async def process_diamonds_start(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -11800,14 +11434,11 @@ async def process_diamonds_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '<tg-emoji emoji-id="5307594157739515229">💠</tg-emoji> <b>Алмазы · выбери количество мин!</b>\n'
-        '<code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢'
+        _lf('{0}\n<tg-emoji emoji-id="5307594157739515229">💠</tg-emoji> <b>Алмазы · выбери количество мин!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: 10 m¢', (_fmt(user_link, '', -1),))
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -11818,7 +11449,7 @@ async def process_diamonds_start(callback: types.CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"diamonds_back_to_catalog_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -11841,33 +11472,34 @@ async def process_diamonds_start(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_count_")))
+@_localized
 async def process_diamonds_count(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-2])
         count = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "select_mines":
-        await callback.answer("Выберите количество мин!", show_alert=True)
+        await callback.answer(_l('Выберите количество мин!'), show_alert=True)
         return
 
     await callback.answer()
@@ -11905,11 +11537,12 @@ async def process_diamonds_count(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_cell_")))
+@_localized
 async def process_diamonds_cell_click(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 4:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
@@ -11917,26 +11550,26 @@ async def process_diamonds_cell_click(callback: types.CallbackQuery):
         target_row = int(data[-2])
         cell_idx = int(data[-1])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["stage"] != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     current_level = game["level"]
@@ -11947,7 +11580,7 @@ async def process_diamonds_cell_click(callback: types.CallbackQuery):
     global_idx = current_level * DIAMONDS_COLS + cell_idx
 
     if global_idx in game["revealed"]:
-        await callback.answer("Эта клетка уже открыта!", show_alert=True)
+        await callback.answer(_l('Эта клетка уже открыта!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -11990,10 +11623,11 @@ async def process_diamonds_cell_click(callback: types.CallbackQuery):
         game["is_processing"] = False
 
 
+@_localized
 async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
@@ -12006,7 +11640,7 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_diamonds_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -12024,45 +11658,22 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Алмазы · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {DIAMONDS_ROWS}\n\n'
-            f'<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5469785308386041323">💥</tg-emoji> <b>Алмазы · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<blockquote><i><tg-emoji emoji-id="5206607081334906820">✔️</tg-emoji>Мог забрать: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢</i></blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(DIAMONDS_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Алмазы · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-            f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {level} из {DIAMONDS_ROWS}\n\n'
-            f'<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Алмазы · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> <b>Уровень:</b> {3} из {4}\n\n<tg-emoji emoji-id="5472212780952066876">🤑</tg-emoji> Выигрыш: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x / {6} m¢', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(DIAMONDS_ROWS, '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1)))
         )
     else:
         if level == 0:
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{get_diamonds_multiplier(mine_count, level + 1):.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(get_diamonds_multiplier(mine_count, level + 1), f'.2f', -1)))
             )
         else:
             win_amount = int(bet * multiplier)
             next_multiplier = get_diamonds_multiplier(mine_count, level + 1)
             text = (
-                f'{user_link}\n'
-                '<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · игра идёт!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {mine_count}\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {format_number(bet)} m¢\n'
-                f'<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{multiplier:.2f}x / {format_number(win_amount)} m¢\n\n'
-                f'<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{next_multiplier:.2f}x</blockquote>'
+                _lf('{0}\n<b><tg-emoji emoji-id="5307594157739515229">💠</tg-emoji>Алмазы · игра идёт!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5469654973308476699">💣</tg-emoji> <b>Мин:</b> {1}\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji><b>Ставка</b>: {2} m¢\n<tg-emoji emoji-id="5431577498364158238">📊</tg-emoji><b>Выигрыш:</b> <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{3}x / {4} m¢\n\n<blockquote>Следующий множитель: <tg-emoji emoji-id="5836936408681421518">❌</tg-emoji>{5}x</blockquote>', (_fmt(user_link, '', -1), _fmt(mine_count, '', -1), _fmt(format_number(bet), '', -1), _fmt(multiplier, f'.2f', -1), _fmt(format_number(win_amount), '', -1), _fmt(next_multiplier, f'.2f', -1)))
             )
 
     grid_buttons = []
@@ -12139,7 +11750,7 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
     if game_over or won:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_diamonds_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -12148,7 +11759,7 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
         if level > 0:
             keyboard.inline_keyboard.append([
                 InlineKeyboardButton(
-                    text="Забрать выигрыш",
+                    text=_l('Забрать выигрыш'),
                     callback_data=f"diamonds_cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -12156,7 +11767,7 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
             ])
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_diamonds_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -12189,40 +11800,41 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_cashout_")))
+@_localized
 async def process_diamonds_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена!", show_alert=True)
+        await callback.answer(_l('Игра уже завершена!'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if game["level"] == 0:
-        await callback.answer("Откройте хотя бы одну клетку!", show_alert=True)
+        await callback.answer(_l('Откройте хотя бы одну клетку!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -12247,36 +11859,37 @@ async def process_diamonds_cashout(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("exit_diamonds_")))
+@_localized
 async def process_exit_diamonds(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
 
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("bet_placed", False) or len(game.get("revealed", set())) > 0 or game.get("level", 0) > 0:
-        await callback.answer("Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».'), show_alert=True)
         return
 
     key = f"exit_{user_id}_{game_id}"
@@ -12301,31 +11914,32 @@ async def process_exit_diamonds(callback: types.CallbackQuery):
             remove_active_game_from_db(game_id)
 
             await callback.message.edit_text(
-                f'<i>✅ Игра отменена. Ставка {format_number(game["bet"])} mCoin возвращена на баланс.</i>',
+                _lf('<i>✅ Игра отменена. Ставка {0} mCoin возвращена на баланс.</i>', (_fmt(format_number(game['bet']), '', -1),)),
                 parse_mode=ParseMode.HTML
             )
 
-            await callback.answer("Игра отменена!")
+            await callback.answer(_l('Игра отменена!'))
             return
         else:
             del exit_confirm[key]
 
     exit_confirm[key] = current_time
-    await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
+    await callback.answer(_l('⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("diamonds_back_to_catalog_")))
+@_localized
 async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
     data = callback.data.split("_")
 
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[-1])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -12355,6 +11969,7 @@ async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
 
 
 
+@_localized
 async def start_gold_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -12365,7 +11980,7 @@ async def start_gold_game_from_command(message, user_id, chat_id, bet):
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     now = datetime.now()
@@ -12444,6 +12059,7 @@ def build_gold_board_text(game, bet, level, game_over, won, exploded_mine):
     return "\n".join(rows_text)
 
 
+@_localized
 async def show_gold_grid_from_message(message_or_callback, user_id, game_id, game_over=False, won=False):
     game = games.get(game_id)
     if not game:
@@ -12457,9 +12073,9 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
     exploded_mine = game.get("exploded_mine")
 
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        raw_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
+        raw_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or _l('Игрок')
     else:
-        raw_name = "Игрок"
+        raw_name = _l('Игрок')
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(raw_name)}</a>'
 
     current_mult = GOLD_MULTIPLIERS.get(level, 1) if level > 0 else 1
@@ -12481,40 +12097,20 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
 
     if game_over and exploded_mine is not None:
         text = (
-            f'{user_link}\n'
-            '💥 <b>Золото · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'⚜️ <b>Пройдено:</b> {level} из 12\n\n'
-            f'{board_text}'
+            _lf('{0}\n💥 <b>Золото · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {1} m¢\n⚜️ <b>Пройдено:</b> {2} из 12\n\n{3}', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(board_text, '', -1)))
         )
     elif won:
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Золото · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'⚜️ <b>Пройдено:</b> {level} из 12\n'
-            f'<tg-emoji emoji-id="5375296873982604963">💰</tg-emoji><b>Выигрыш:</b> х{current_mult} / {format_number(win_amount)} m¢\n\n'
-            f'{board_text}'
+            _lf('{0}\n<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji><b>Золото · Победа!</b> <tg-emoji emoji-id="5427009714745517609">✅</tg-emoji>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {1} m¢\n⚜️ <b>Пройдено:</b> {2} из 12\n<tg-emoji emoji-id="5375296873982604963">💰</tg-emoji><b>Выигрыш:</b> х{3} / {4} m¢\n\n{5}', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(level, '', -1), _fmt(current_mult, '', -1), _fmt(format_number(win_amount), '', -1), _fmt(board_text, '', -1)))
         )
     else:
         if level == 0:
             text = (
-                f'{user_link}\n'
-                ' <tg-emoji emoji-id="5370731117588523522">🌼</tg-emoji><b>Золото · начни игру!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {format_number(bet)} m¢\n\n'
-                f'{board_text}'
+                _lf('{0}\n <tg-emoji emoji-id="5370731117588523522">🌼</tg-emoji><b>Золото · начни игру!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {1} m¢\n\n{2}', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(board_text, '', -1)))
             )
         else:
             text = (
-                f'{user_link}\n'
-                ' <tg-emoji emoji-id="5472010685560921607">🖥</tg-emoji><b>Золото · игра идёт.</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {format_number(bet)} m¢\n'
-                f' <tg-emoji emoji-id="5375296873982604963">💰</tg-emoji><b>Выигрыш:</b> х{current_mult} / {format_number(win_amount)} m¢\n\n'
-                f'{board_text}'
+                _lf('{0}\n <tg-emoji emoji-id="5472010685560921607">🖥</tg-emoji><b>Золото · игра идёт.</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5881948563591666817">💸</tg-emoji> <b>Ставка:</b> {1} m¢\n <tg-emoji emoji-id="5375296873982604963">💰</tg-emoji><b>Выигрыш:</b> х{2} / {3} m¢\n\n{4}', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(current_mult, '', -1), _fmt(format_number(win_amount), '', -1), _fmt(board_text, '', -1)))
             )
 
     keyboard = None
@@ -12537,7 +12133,7 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
         if level > 0:
             buttons.append([
                 InlineKeyboardButton(
-                    text=f"Забрать {format_number(win_amount)} m¢",
+                    text=_lf('Забрать {0} m¢', (_fmt(format_number(win_amount), '', -1),)),
                     callback_data=f"gold_cashout_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5427009714745517609"
@@ -12545,7 +12141,7 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
             ])
         buttons.append([
             InlineKeyboardButton(
-                text="Назад",
+                text=_l('Назад'),
                 callback_data=f"exit_gold_{game_id}",
                 icon_custom_emoji_id="5255703720078879038"
             )
@@ -12589,10 +12185,11 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("gold_cell_")))
+@_localized
 async def process_gold_cell(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 5:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
@@ -12600,25 +12197,25 @@ async def process_gold_cell(callback: types.CallbackQuery):
         target_row = int(data[3])
         cell_idx = int(data[4])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     current_level = game["level"]
@@ -12666,38 +12263,39 @@ async def process_gold_cell(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("gold_cashout_")))
+@_localized
 async def process_gold_cashout(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена!", show_alert=True)
+        await callback.answer(_l('Игра уже завершена!'), show_alert=True)
         return
 
     if game.get("stage") != "playing":
-        await callback.answer("Игра неактивна!", show_alert=True)
+        await callback.answer(_l('Игра неактивна!'), show_alert=True)
         return
 
     if game["level"] == 0:
-        await callback.answer("Пройдите хотя бы один уровень!", show_alert=True)
+        await callback.answer(_l('Пройдите хотя бы один уровень!'), show_alert=True)
         return
 
     if game.get("is_processing", False):
@@ -12720,34 +12318,35 @@ async def process_gold_cashout(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("exit_gold_")))
+@_localized
 async def process_exit_gold(callback: types.CallbackQuery):
     data = callback.data.split("_")
     if len(data) < 3:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     try:
         game_id = int(data[2])
     except ValueError:
-        await callback.answer("Ошибка! Попробуйте заново.", show_alert=True)
+        await callback.answer(_l('Ошибка! Попробуйте заново.'), show_alert=True)
         return
 
     user_id = callback.from_user.id
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("game_over", False) or game.get("won", False) or game.get("cashed_out", False):
-        await callback.answer("Игра уже завершена.", show_alert=True)
+        await callback.answer(_l('Игра уже завершена.'), show_alert=True)
         return
 
     if game.get("level", 0) > 0:
-        await callback.answer("Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».", show_alert=True)
+        await callback.answer(_l('Нельзя отменить начатую игру! Нажмите «Забрать выигрыш».'), show_alert=True)
         return
 
     key = f"exit_{user_id}_{game_id}"
@@ -12772,19 +12371,20 @@ async def process_exit_gold(callback: types.CallbackQuery):
             remove_active_game_from_db(game_id)
 
             await callback.message.edit_text(
-                f'<i>✅ Игра отменена. Ставка {format_number(game["bet"])} mCoin возвращена на баланс.</i>',
+                _lf('<i>✅ Игра отменена. Ставка {0} mCoin возвращена на баланс.</i>', (_fmt(format_number(game['bet']), '', -1),)),
                 parse_mode=ParseMode.HTML
             )
-            await callback.answer("Игра отменена!")
+            await callback.answer(_l('Игра отменена!'))
             return
         else:
             del exit_confirm[key]
 
     exit_confirm[key] = current_time
-    await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
+    await callback.answer(_l('⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ["gold", "info_gold"]))
+@_localized
 async def process_gold_info_callback(callback: types.CallbackQuery):
     await callback.answer()
     await show_gold_info(callback, callback.from_user.id, is_callback=True)
@@ -12832,6 +12432,7 @@ def format_21_cards(cards):
     return f"{cards_str} | {score}"
 
 
+@_localized
 async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
     if key in user_messages:
@@ -12851,12 +12452,12 @@ async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
 
     user_data = get_user(user_id)
     if not update_user(user_id, balance=user_data["balance"] - bet):
-        await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка списания средств!</i>'), parse_mode=ParseMode.HTML)
         return
 
     game_id = get_next_game_id()
     now = datetime.now()
-    user_first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
+    user_first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')
 
     game_data = {
         "type": "twentyone",
@@ -12884,22 +12485,20 @@ async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
     user_link = get_user_mention(user_id, user_first_name)
 
     text = (
-        f'{user_link}\n<tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji>21 · начни игру!\n'
-        '<code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji><b>Ставка:</b> {format_number(bet)} m¢'
+        _lf('{0}\n<tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji>21 · начни игру!\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji><b>Ставка:</b> {1} m¢', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Запустить",
+                    text=_l('Запустить'),
                     callback_data=f"to_start_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5809949600152296075"
                 ),
                 InlineKeyboardButton(
-                    text="Назад",
+                    text=_l('Назад'),
                     callback_data=f"to_cancel_{game_id}",
                     icon_custom_emoji_id="5255703720078879038"
                 )
@@ -12919,38 +12518,37 @@ async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
     _remember_message(user_messages, key, msg.message_id)
 
 
+@_localized
 async def show_twentyone_from_callback(callback: types.CallbackQuery, user_id: int, game_id: int):
     game = games.get(game_id)
     if not game:
-        await callback.answer("Игра не найдена!", show_alert=True)
+        await callback.answer(_l('Игра не найдена!'), show_alert=True)
         return
 
     if game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     bet = game["bet"]
-    user_first_name = game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"
+    user_first_name = game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок')
     user_link = get_user_mention(user_id, user_first_name)
     stage = game.get("stage", "ready")
 
     if stage == "ready":
         text = (
-            f'{user_link}\n<tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji>21 · начни игру!\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji><b>Ставка:</b> {format_number(bet)} m¢'
+            _lf('{0}\n<tg-emoji emoji-id="5395325195542078574">🍀</tg-emoji>21 · начни игру!\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji><b>Ставка:</b> {1} m¢', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1)))
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Запустить",
+                        text=_l('Запустить'),
                         callback_data=f"to_start_{game_id}",
                         style="success",
                         icon_custom_emoji_id="5809949600152296075"
                     ),
                     InlineKeyboardButton(
-                        text="Назад",
+                        text=_l('Назад'),
                         callback_data=f"to_cancel_{game_id}",
                         icon_custom_emoji_id="5255703720078879038"
                     )
@@ -12963,26 +12561,19 @@ async def show_twentyone_from_callback(callback: types.CallbackQuery, user_id: i
         dealer_str = format_21_cards(dealer_cards)
         player_str = format_21_cards(player_cards)
         text = (
-            f'{user_link}\n'
-            '♠️<b> 21 · игра идёт.</b> <code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Ставка: {format_number(bet)} m¢\n\n'
-            '🤵♂ Дилер: \n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты: \n'
-            f'<blockquote>{player_str}</blockquote>'
+            _lf('{0}\n♠️<b> 21 · игра идёт.</b> <code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Ставка: {1} m¢\n\n🤵♂ Дилер: \n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты: \n<blockquote>{3}</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
         )
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="СТОП",
+                        text=_l('СТОП'),
                         callback_data=f"to_stand_{game_id}",
                         style="danger",
                         icon_custom_emoji_id="5445350865776941647"
                     ),
                     InlineKeyboardButton(
-                        text="ЕЩЁ",
+                        text=_l('ЕЩЁ'),
                         callback_data=f"to_hit_{game_id}",
                         style="success",
                         icon_custom_emoji_id="5809949600152296075"
@@ -13014,6 +12605,7 @@ async def show_twentyone_from_callback(callback: types.CallbackQuery, user_id: i
         game["message_id"] = msg.message_id
 
 
+@_localized
 async def update_twentyone_game_view(message_obj, user_id, game_id, user_first_name="Игрок"):
     game = games.get(game_id)
     if not game:
@@ -13029,27 +12621,20 @@ async def update_twentyone_game_view(message_obj, user_id, game_id, user_first_n
     player_str = format_21_cards(player_cards)
 
     text = (
-        f'{user_link}\n'
-        '♠️<b> 21 · игра идёт.</b> <code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Ставка: {format_number(bet)} m¢\n\n'
-        '🤵♂ Дилер: \n'
-        f'<blockquote>{dealer_str}</blockquote>\n'
-        '<code>············</code>\n'
-        '🫵 Ты: \n'
-        f'<blockquote>{player_str}</blockquote>'
+        _lf('{0}\n♠️<b> 21 · игра идёт.</b> <code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji> Ставка: {1} m¢\n\n🤵♂ Дилер: \n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты: \n<blockquote>{3}</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="СТОП",
+                    text=_l('СТОП'),
                     callback_data=f"to_stand_{game_id}",
                     style="danger",
                     icon_custom_emoji_id="5445350865776941647"
                 ),
                 InlineKeyboardButton(
-                    text="ЕЩЁ",
+                    text=_l('ЕЩЁ'),
                     callback_data=f"to_hit_{game_id}",
                     style="success",
                     icon_custom_emoji_id="5809949600152296075"
@@ -13082,17 +12667,18 @@ async def update_twentyone_game_view(message_obj, user_id, game_id, user_first_n
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_start_")))
+@_localized
 async def process_twentyone_start(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     game = games.get(game_id)
     user_id = callback.from_user.id
     if not game or game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "ready":
@@ -13131,32 +12717,14 @@ async def process_twentyone_start(callback: types.CallbackQuery):
             add_game_history(user_id, "twentyone", bet, "draw", bet, game.get("created_at_str"))
 
             text = (
-                f'{user_link}\n'
-                '🤝 <b>21 · Ничья!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {format_number(bet)} m¢\n\n'
-                '🤵♂ Дилер:\n'
-                f'<blockquote>{dealer_str}</blockquote>\n'
-                '<code>············</code>\n'
-                '🫵 Ты:\n'
-                f'<blockquote>{player_str}</blockquote>\n\n'
-                '<i>🤝 Ничья! У обоих 21. Ставка возвращена на баланс.</i>'
+                _lf('{0}\n🤝 <b>21 · Ничья!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {1} m¢\n\n🤵♂ Дилер:\n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{3}</blockquote>\n\n<i>🤝 Ничья! У обоих 21. Ставка возвращена на баланс.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
             )
         else:
             update_user(user_id, lost=user_data["lost"] + bet, games=user_data["games"] + 1)
             add_game_history(user_id, "twentyone", bet, "lose", 0, game.get("created_at_str"))
 
             text = (
-                f'{user_link}\n'
-                '<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n'
-                '<code>·····················</code>\n'
-                f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {format_number(bet)} m¢\n\n'
-                '🤵♂ Дилер:\n'
-                f'<blockquote>{dealer_str}</blockquote>\n'
-                '<code>············</code>\n'
-                '🫵 Ты:\n'
-                f'<blockquote>{player_str}</blockquote>\n\n'
-                f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У дилера 21.</i>'
+                _lf('{0}\n<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {1} m¢\n\n🤵♂ Дилер:\n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{3}</blockquote>\n\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У дилера 21.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
             )
 
         try:
@@ -13172,17 +12740,18 @@ async def process_twentyone_start(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_hit_")))
+@_localized
 async def process_twentyone_hit(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     game = games.get(game_id)
     user_id = callback.from_user.id
     if not game or game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "playing" or game.get("settled", False):
@@ -13217,16 +12786,7 @@ async def process_twentyone_hit(callback: types.CallbackQuery):
         player_str = format_21_cards(game["player_cards"])
 
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {format_number(bet)} m¢\n\n'
-            '🤵♂ Дилер:\n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты:\n'
-            f'<blockquote>{player_str}</blockquote>\n\n'
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У вас перебор ({player_score}).</i>'
+            _lf('{0}\n<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {1} m¢\n\n🤵♂ Дилер:\n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{3}</blockquote>\n\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У вас перебор ({4}).</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1), _fmt(player_score, '', -1)))
         )
 
         try:
@@ -13239,17 +12799,18 @@ async def process_twentyone_hit(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_stand_")))
+@_localized
 async def process_twentyone_stand(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     game = games.get(game_id)
     user_id = callback.from_user.id
     if not game or game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") != "playing" or game.get("settled", False):
@@ -13290,17 +12851,7 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
         add_game_history(user_id, "twentyone", bet, "win", win_amount, game.get("created_at_str"))
 
         text = (
-            f'{user_link}\n'
-            '🤯 <b>21 · Победа! ✅</b>\n'
-            '<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'💰 <b>Выигрыш: </b>x1,97 / {format_number(win_amount)} m¢\n\n'
-            '🤵♂ Дилер:\n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты:\n'
-            f'<blockquote>{player_str}</blockquote>\n\n'
-            '<i>🎉 Ты победил! У дилера перебор.</i>'
+            _lf('{0}\n🤯 <b>21 · Победа! ✅</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n💰 <b>Выигрыш: </b>x1,97 / {2} m¢\n\n🤵♂ Дилер:\n<blockquote>{3}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{4}</blockquote>\n\n<i>🎉 Ты победил! У дилера перебор.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(format_number(win_amount), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
         )
     elif player_score > dealer_score:
         win_amount = int(bet * 1.97) if is_admin_unlimited_bet(user_id) else min(int(bet * 1.97), 1000000000)
@@ -13308,49 +12859,21 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
         add_game_history(user_id, "twentyone", bet, "win", win_amount, game.get("created_at_str"))
 
         text = (
-            f'{user_link}\n'
-            '🤯 <b>21 · Победа! ✅</b>\n'
-            '<code>·····················</code>\n'
-            f'💸 <b>Ставка:</b> {format_number(bet)} m¢\n'
-            f'💰 <b>Выигрыш: </b>x1,97 / {format_number(win_amount)} m¢\n\n'
-            '🤵♂ Дилер:\n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты:\n'
-            f'<blockquote>{player_str}</blockquote>\n\n'
-            f'<i>🎉 Ты победил! У тебя {player_score} против {dealer_score} у дилера.</i>'
+            _lf('{0}\n🤯 <b>21 · Победа! ✅</b>\n<code>·····················</code>\n💸 <b>Ставка:</b> {1} m¢\n💰 <b>Выигрыш: </b>x1,97 / {2} m¢\n\n🤵♂ Дилер:\n<blockquote>{3}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{4}</blockquote>\n\n<i>🎉 Ты победил! У тебя {5} против {6} у дилера.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(format_number(win_amount), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1), _fmt(player_score, '', -1), _fmt(dealer_score, '', -1)))
         )
     elif player_score == dealer_score:
         update_user(user_id, balance=user_data["balance"] + bet, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "draw", bet, game.get("created_at_str"))
 
         text = (
-            f'{user_link}\n'
-            '🤝 <b>21 · Ничья!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {format_number(bet)} m¢\n\n'
-            '🤵♂ Дилер:\n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты:\n'
-            f'<blockquote>{player_str}</blockquote>\n\n'
-            '<i>🤝 Ничья! Ставка возвращена на баланс.</i>'
+            _lf('{0}\n🤝 <b>21 · Ничья!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {1} m¢\n\n🤵♂ Дилер:\n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{3}</blockquote>\n\n<i>🤝 Ничья! Ставка возвращена на баланс.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1)))
         )
     else:
         update_user(user_id, lost=user_data["lost"] + bet, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "lose", 0, game.get("created_at_str"))
 
         text = (
-            f'{user_link}\n'
-            '<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {format_number(bet)} m¢\n\n'
-            '🤵♂ Дилер:\n'
-            f'<blockquote>{dealer_str}</blockquote>\n'
-            '<code>············</code>\n'
-            '🫵 Ты:\n'
-            f'<blockquote>{player_str}</blockquote>\n\n'
-            f'<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У дилера {dealer_score}.</i>'
+            _lf('{0}\n<tg-emoji emoji-id="5213090867044162716">😭</tg-emoji> <b>21 · Проигрыш!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5224257782013769471">💰</tg-emoji>  Ставка: {1} m¢\n\n🤵♂ Дилер:\n<blockquote>{2}</blockquote>\n<code>············</code>\n🫵 Ты:\n<blockquote>{3}</blockquote>\n\n<tg-emoji emoji-id="5472255352667904566">😔</tg-emoji> <i>Не повезло! У дилера {4}.</i>', (_fmt(user_link, '', -1), _fmt(format_number(bet), '', -1), _fmt(dealer_str, '', -1), _fmt(player_str, '', -1), _fmt(dealer_score, '', -1)))
         )
 
     try:
@@ -13360,17 +12883,18 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("to_cancel_")))
+@_localized
 async def process_twentyone_cancel(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     game = games.get(game_id)
     user_id = callback.from_user.id
     if not game or game["owner_id"] != user_id:
-        await callback.answer("Это не ваша игра!", show_alert=True)
+        await callback.answer(_l('Это не ваша игра!'), show_alert=True)
         return
 
     if game.get("stage") == "ready" and not game.get("settled", False):
@@ -13383,17 +12907,18 @@ async def process_twentyone_cancel(callback: types.CallbackQuery):
         if game_id in games:
             del games[game_id]
         remove_active_game_from_db(game_id)
-        await callback.answer("Игра отменена. Ставка возвращена.")
+        await callback.answer(_l('Игра отменена. Ставка возвращена.'))
         try:
-            await callback.message.edit_text("<i>Игра отменена. Ставка возвращена на баланс.</i>", parse_mode=ParseMode.HTML)
+            await callback.message.edit_text(_l('<i>Игра отменена. Ставка возвращена на баланс.</i>'), parse_mode=ParseMode.HTML)
         except Exception:
             pass
     else:
-        await callback.answer("Игру нельзя отменить во время раунда!", show_alert=True)
+        await callback.answer(_l('Игру нельзя отменить во время раунда!'), show_alert=True)
 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "play"))
+@_localized
 async def process_play(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13414,6 +12939,7 @@ async def process_play(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "back"))
+@_localized
 async def process_back(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13431,16 +12957,14 @@ async def process_back(callback: types.CallbackQuery):
         pass
 
     text = (
-        '<b>Привет! <tg-emoji emoji-id="5350612670435313545">👋</tg-emoji> Ты в Мины Бот — место, где время летит незаметно!</b>\n\n'
-        '🎮 Много бесплатных игр без скачивания, прямо в Telegram.\n\n'
-        'Соревнуйся с друзьями и прокачивай свои каналы и чаты. 🏆'
+        _l('<b>Привет! <tg-emoji emoji-id="5350612670435313545">👋</tg-emoji> Ты в Мины Бот — место, где время летит незаметно!</b>\n\n🎮 Много бесплатных игр без скачивания, прямо в Telegram.\n\nСоревнуйся с друзьями и прокачивай свои каналы и чаты. 🏆')
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Играть",
+                    text=_l('Играть'),
                     callback_data="play",
                     style="success",
                     icon_custom_emoji_id="5350612670435313545"
@@ -13448,14 +12972,14 @@ async def process_back(callback: types.CallbackQuery):
             ],
             [
                 InlineKeyboardButton(
-                    text="🧾 Чеки",
+                    text=_l('🧾 Чеки'),
                     callback_data="checks_menu",
                     style="primary"
                 )
             ],
             [
                 InlineKeyboardButton(
-                    text="Добавить бота в чат",
+                    text=_l('Добавить бота в чат'),
                     url=f"https://t.me/{BOT_USERNAME}?startgroup=start",
                     style="primary",
                     icon_custom_emoji_id="5393194986252542669"
@@ -13478,6 +13002,7 @@ async def process_back(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("noop_") or c.data.startswith("tower_noop_") or c.data.startswith("qwak_noop_") or c.data.startswith("scratch_noop_") or c.data.startswith("diamonds_noop_")))
+@_localized
 async def process_noop(callback: types.CallbackQuery):
     try:
         game_id = int(callback.data.split("_")[-1])
@@ -13487,10 +13012,11 @@ async def process_noop(callback: types.CallbackQuery):
             return
     except Exception:
         pass
-    await callback.answer("Игра завершена.")
+    await callback.answer(_l('Игра завершена.'))
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "check_bonus"))
+@_localized
 async def process_check_bonus(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13498,7 +13024,7 @@ async def process_check_bonus(callback: types.CallbackQuery):
     user_data = get_user(user_id)
 
     if not user_data:
-        await callback.answer("Ошибка получения данных!", show_alert=True)
+        await callback.answer(_l('Ошибка получения данных!'), show_alert=True)
         return
 
     try:
@@ -13508,7 +13034,7 @@ async def process_check_bonus(callback: types.CallbackQuery):
         description = ""
 
     if f"@{BOT_USERNAME}" not in description and BOT_USERNAME not in description:
-        await callback.answer("Не все условия выполнены.", show_alert=True)
+        await callback.answer(_l('Не все условия выполнены.'), show_alert=True)
         return
 
     if user_data["bonus_time"]:
@@ -13518,7 +13044,7 @@ async def process_check_bonus(callback: types.CallbackQuery):
                 time_left = timedelta(hours=6) - (datetime.now() - last_bonus)
                 hours = int(time_left.total_seconds() // 3600)
                 minutes = int((time_left.total_seconds() % 3600) // 60)
-                await callback.answer(f"Бонус можно получить только раз в 6 часов. Осталось: {hours}ч {minutes}м", show_alert=True)
+                await callback.answer(_lf('Бонус можно получить только раз в 6 часов. Осталось: {0}ч {1}м', (_fmt(hours, '', -1), _fmt(minutes, '', -1))), show_alert=True)
                 return
         except Exception:
             pass
@@ -13530,24 +13056,24 @@ async def process_check_bonus(callback: types.CallbackQuery):
         except Exception:
             pass
         await callback.message.edit_text(
-            f'<i>🎉 Поздравляем! Вы получили бонус {format_number(bonus)} mCoin!\n'
-            f'Текущий баланс: {format_number(user_data["balance"] + bonus)} mCoin</i>',
+            _lf('<i>🎉 Поздравляем! Вы получили бонус {0} mCoin!\nТекущий баланс: {1} mCoin</i>', (_fmt(format_number(bonus), '', -1), _fmt(format_number(user_data['balance'] + bonus), '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await callback.answer("Ошибка при начислении бонуса!", show_alert=True)
+        await callback.answer(_l('Ошибка при начислении бонуса!'), show_alert=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "bonus_tutorial"))
+@_localized
 async def process_bonus_tutorial(callback: types.CallbackQuery):
     await callback.answer()
 
     user_id = callback.from_user.id
-    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
-        f'{user_link}, бонус получить достаточно просто, нужно просто добавить юзернейм бота - <code>@{BOT_USERNAME}</code> в описание профиля.'
+        _lf('{0}, бонус получить достаточно просто, нужно просто добавить юзернейм бота - <code>@{1}</code> в описание профиля.', (_fmt(user_link, '', -1), _fmt(BOT_USERNAME, '', -1)))
     )
 
     photo_url = "https://iili.io/CiK2iKJ.md.png"
@@ -13556,7 +13082,7 @@ async def process_bonus_tutorial(callback: types.CallbackQuery):
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Продолжить",
+                    text=_l('Продолжить'),
                     callback_data="bonus_continue"
                 )
             ]
@@ -13574,6 +13100,7 @@ async def process_bonus_tutorial(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "bonus_continue"))
+@_localized
 async def process_bonus_continue(callback: types.CallbackQuery):
     await callback.answer()
 
@@ -13583,7 +13110,7 @@ async def process_bonus_continue(callback: types.CallbackQuery):
 
     await callback.message.answer_photo(
         photo=photo_url,
-        caption="Выполните так как на фото",
+        caption=_l('Выполните так как на фото'),
         parse_mode=ParseMode.HTML
     )
 
@@ -13635,20 +13162,30 @@ def _apply_mp_transfer(sender_id, receiver_id, amount, today):
         return False
 
 
+def _transfer_comment_block(comment, user_id):
+    if not comment:
+        return ""
+    return _lf('\n<blockquote> <tg-emoji emoji-id="5465300082628763143">💬</tg-emoji> Комментарий: {0}</blockquote>', (_fmt(html.escape(comment), '', -1),), user_id=user_id)
+
+
+@dp.message(Command("transfer"))
 @dp.message(_inline_filter(lambda message: message.text and (
-    message.text.lower().startswith("дать") or 
-    message.text.lower().startswith("пер")
+    message.text.lower().startswith("дать") or
+    message.text.lower().startswith("пер") or
+    message.text.strip().lower() == "transfer" or
+    message.text.strip().lower().startswith("transfer ")
 )))
+@_localized
 async def cmd_transfer(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
 
     if is_admin(user_id) and not admin_has_permission(user_id, "transfer"):
-        await message.reply("<i>Владельцем отключено право на передачи.</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Владельцем отключено право на передачи.</i>'), parse_mode=ParseMode.HTML)
         return
 
     if is_transfer_banned(user_id):
-        await message.reply("<i>Вам заблокированы переводы! 🚫</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Вам заблокированы переводы! 🚫</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = message.text.strip()
@@ -13656,14 +13193,13 @@ async def cmd_transfer(message: types.Message):
     parts = text.split()
     if len(parts) < 2 and not message.reply_to_message:
         await message.reply(
-            "<i>Укажите сумму и получателя!\n"
-            "Пример: ответом на сообщение <code>дать 10кк</code> или <code>дать 10кк @username</code></i>",
+            _l('<i>Укажите сумму и получателя!\nПример: ответом на сообщение <code>дать 10кк</code> или <code>дать 10кк @username</code></i>'),
             parse_mode=ParseMode.HTML
         )
         return
 
     cmd = parts[0].lower()
-    if cmd not in ["дать", "пер"]:
+    if cmd not in ["дать", "пер", "transfer"] and _message_command_name(message) != "transfer":
         return
 
     args_parts = parts[1:]
@@ -13676,7 +13212,7 @@ async def cmd_transfer(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Игрок')
         if args_parts:
             amt = resolve_bet_amount(args_parts[0], user_data["balance"])
             if amt is not None:
@@ -13699,7 +13235,7 @@ async def cmd_transfer(message: types.Message):
             found = get_user_by_username(username_part)
             if not found:
                 await message.reply(
-                    f"<i>Игрок @{username_part} не найден в базе бота. Он должен хотя бы раз написать боту.</i>",
+                    _lf('<i>Игрок @{0} не найден в базе бота. Он должен хотя бы раз написать боту.</i>', (_fmt(username_part, '', -1),)),
                     parse_mode=ParseMode.HTML
                 )
                 return
@@ -13716,35 +13252,33 @@ async def cmd_transfer(message: types.Message):
                     amount = parse_amount(" ".join(amount_tokens))
         else:
             await message.reply(
-                "<i>Укажите получателя!\n"
-                "Напишите в ответ на сообщение игрока: <code>дать 10кк</code> или укажите юзернейм: <code>дать 10кк @username</code></i>",
+                _l('<i>Укажите получателя!\nНапишите в ответ на сообщение игрока: <code>дать 10кк</code> или укажите юзернейм: <code>дать 10кк @username</code></i>'),
                 parse_mode=ParseMode.HTML
             )
             return
 
     if amount is None or amount <= 0:
-        await message.reply("<i>Неверная сумма! Пример: <code>дать 10кк</code></i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Неверная сумма! Пример: <code>дать 10кк</code></i>'), parse_mode=ParseMode.HTML)
         return
 
     if target_user_id == user_id:
-        await message.reply("<i>Нельзя переводить самому себе!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Нельзя переводить самому себе!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if is_transfer_banned(target_user_id):
-        await message.reply("<i>Этому пользователю заблокированы переводы! 🚫</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Этому пользователю заблокированы переводы! 🚫</i>'), parse_mode=ParseMode.HTML)
         return
 
     if user_data["balance"] < amount:
         await message.reply(
-            f"<i>Недостаточно средств!\n"
-            f"<tg-emoji emoji-id=\"5418238674267556907\">⭐</tg-emoji> Баланс: <b>{format_number(user_data['balance'])} m¢</b></i>",
+            _lf('<i>Недостаточно средств!\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{0} m¢</b></i>', (_fmt(format_number(user_data['balance']), '', -1),)),
             parse_mode=ParseMode.HTML
         )
         return
 
     allowed, limit_error = reserve_admin_usage(user_id, "transfer", amount)
     if not allowed:
-        await message.reply(f"<i>{html.escape(limit_error or 'Операция запрещена.')}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>{0}</i>', (_fmt(html.escape(limit_error or _l('Операция запрещена.')), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     commission = int(amount * 0.1)
@@ -13757,33 +13291,25 @@ async def cmd_transfer(message: types.Message):
     new_sender_balance = sender_balance_before - amount
     new_receiver_balance = receiver_balance_before + amount_after_commission
     if not _apply_mcoin_transfer(user_id, target_user_id, amount, commission):
-        await message.reply("<i>Не удалось выполнить перевод. Средства не списаны.</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Не удалось выполнить перевод. Средства не списаны.</i>'), parse_mode=ParseMode.HTML)
         return
 
-    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
+    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок'))
     sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
     clean_target_name = html.escape(get_user_display_name(target_user_id, target_name))
     target_link = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a>'
 
-    clean_comment = html.escape(comment) if comment else ""
-    comment_block = f'\n<blockquote> <tg-emoji emoji-id="5465300082628763143">💬</tg-emoji> Комментарий: {clean_comment}</blockquote>' if comment else ""
+    comment_block = _transfer_comment_block(comment, user_id)
 
     sender_msg = (
-        f'<tg-emoji emoji-id="5472250091332993630">💳</tg-emoji> {sender_link} передал(-а) <b>{format_number(amount_after_commission)} m¢</b> игроку {target_link}.'
-        f'\n<blockquote> <tg-emoji emoji-id="5287231198098117669">💰</tg-emoji>Комиссия: {format_number(commission)} m¢</blockquote>'
-        f'{comment_block}'
-        f'\n<code>·····················</code>'
-        f'\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <s>{format_number(sender_balance_before)}</s> → <b>{format_number(new_sender_balance)} m¢</b>'
+        _lf('<tg-emoji emoji-id="5472250091332993630">💳</tg-emoji> {0} передал(-а) <b>{1} m¢</b> игроку {2}.\n<blockquote> <tg-emoji emoji-id="5287231198098117669">💰</tg-emoji>Комиссия: {3} m¢</blockquote>{4}\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <s>{5}</s> → <b>{6} m¢</b>', (_fmt(sender_link, '', -1), _fmt(format_number(amount_after_commission), '', -1), _fmt(target_link, '', -1), _fmt(format_number(commission), '', -1), _fmt(comment_block, '', -1), _fmt(format_number(sender_balance_before), '', -1), _fmt(format_number(new_sender_balance), '', -1)))
     )
 
     await message.reply(sender_msg, parse_mode=ParseMode.HTML)
 
     try:
         receiver_msg = (
-            f'<tg-emoji emoji-id="5472250091332993630">💳</tg-emoji> {sender_link} передал(-а) вам <b>{format_number(amount_after_commission)} m¢</b>'
-            f'{comment_block}'
-            f'\n<code>·····················</code>'
-            f'\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: {format_number(receiver_balance_before)} → <b>{format_number(new_receiver_balance)} m¢</b>'
+            _lf('<tg-emoji emoji-id="5472250091332993630">💳</tg-emoji> {0} передал(-а) вам <b>{1} m¢</b>{2}\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: {3} → <b>{4} m¢</b>', (_fmt(sender_link, '', -1), _fmt(format_number(amount_after_commission), '', -1), _fmt(_transfer_comment_block(comment, target_user_id), '', -1), _fmt(format_number(receiver_balance_before), '', -1), _fmt(format_number(new_receiver_balance), '', -1)), user_id=target_user_id)
         )
         await bot.send_message(
             chat_id=target_user_id,
@@ -13797,6 +13323,7 @@ async def cmd_transfer(message: types.Message):
 
 @dp.message(Command("point", "points", "mp", "поинт", "поинты"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["поинт", "поинты", "point", "points", "/point", "/points", "мп", "/mp", "mp"]))
+@_localized
 async def cmd_point(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
@@ -13804,9 +13331,7 @@ async def cmd_point(message: types.Message):
     rem_limit = get_user_mp_limit(user_data)
 
     text = (
-        f"💎 Баланс: {format_number(mp_balance)} MP\n"
-        f"<code>·····················</code>\n"
-        f"<blockquote>Лимит: {format_number(rem_limit)} MP/д.</blockquote>"
+        _lf('💎 Баланс: {0} MP\n<code>·····················</code>\n<blockquote>Лимит: {1} MP/д.</blockquote>', (_fmt(format_number(mp_balance), '', -1), _fmt(format_number(rem_limit), '', -1)))
     )
 
     if message.chat.type in ["group", "supergroup"]:
@@ -13822,22 +13347,19 @@ async def cmd_point(message: types.Message):
     message.text.strip().lower().startswith("/send ") or
     message.text.strip().lower().startswith("send ")
 )))
+@_localized
 async def cmd_send_mp(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
-    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
+    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок'))
     sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
 
     help_text = (
-        f"{sender_link}, ты не ввел сколько MPOINT хочешь перевести!\n"
-        f"Комиссия на перевод - 0%\n"
-        f"<blockquote>Пример: /send сумма «в ответ» </blockquote>\n"
-        f"<blockquote>Пример: /send 10 6025818386</blockquote>\n"
-        f"<blockquote>Пример: /send 10 @username</blockquote>"
+        _lf('{0}, ты не ввел сколько MPOINT хочешь перевести!\nКомиссия на перевод - 0%\n<blockquote>Пример: /send сумма «в ответ» </blockquote>\n<blockquote>Пример: /send 10 6025818386</blockquote>\n<blockquote>Пример: /send 10 @username</blockquote>', (_fmt(sender_link, '', -1),))
     )
 
     if is_transfer_banned(user_id):
-        await message.reply("<i>Вам заблокированы переводы! 🚫</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Вам заблокированы переводы! 🚫</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = message.text.strip()
@@ -13850,7 +13372,7 @@ async def cmd_send_mp(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Игрок')
         if len(parts) >= 2:
             amount = parse_amount(parts[1])
         else:
@@ -13885,7 +13407,7 @@ async def cmd_send_mp(message: types.Message):
                 found = get_user_by_username(uname)
                 if not found:
                     await message.reply(
-                        f"<i>Игрок @{uname} не найден в базе бота. Он должен хотя бы раз написать боту.</i>",
+                        _lf('<i>Игрок @{0} не найден в базе бота. Он должен хотя бы раз написать боту.</i>', (_fmt(uname, '', -1),)),
                         parse_mode=ParseMode.HTML
                     )
                     return
@@ -13901,7 +13423,7 @@ async def cmd_send_mp(message: types.Message):
                     target_name = f"@{target_arg}"
                 else:
                     await message.reply(
-                        f"<i>Игрок {target_arg} не найден в базе бота.</i>",
+                        _lf('<i>Игрок {0} не найден в базе бота.</i>', (_fmt(target_arg, '', -1),)),
                         parse_mode=ParseMode.HTML
                     )
                     return
@@ -13911,18 +13433,17 @@ async def cmd_send_mp(message: types.Message):
         return
 
     if target_user_id == user_id:
-        await message.reply("<i>Нельзя переводить самому себе!</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Нельзя переводить самому себе!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if is_transfer_banned(target_user_id):
-        await message.reply("<i>Этому пользователю заблокированы переводы! 🚫</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Этому пользователю заблокированы переводы! 🚫</i>'), parse_mode=ParseMode.HTML)
         return
 
     sender_mp = user_data.get("mp_balance", 0) or 0
     if sender_mp < amount:
         await message.reply(
-            f"<i>Недостаточно средств!\n"
-            f"💎 Баланс: <b>{format_number(sender_mp)} MP</b></i>",
+            _lf('<i>Недостаточно средств!\n💎 Баланс: <b>{0} MP</b></i>', (_fmt(format_number(sender_mp), '', -1),)),
             parse_mode=ParseMode.HTML
         )
         return
@@ -13930,8 +13451,7 @@ async def cmd_send_mp(message: types.Message):
     rem_limit = get_user_mp_limit(user_data)
     if amount > rem_limit:
         await message.reply(
-            f"<i>Превышен суточный лимит переводов!\n"
-            f"📮 Доступно сегодня: <b>{format_number(rem_limit)} MP/д.</b></i>",
+            _lf('<i>Превышен суточный лимит переводов!\n📮 Доступно сегодня: <b>{0} MP/д.</b></i>', (_fmt(format_number(rem_limit), '', -1),)),
             parse_mode=ParseMode.HTML
         )
         return
@@ -13951,19 +13471,19 @@ async def cmd_send_mp(message: types.Message):
     target_link = f'<a href="tg://user?id={target_user_id}">{target_display}</a>'
 
     confirm_text = (
-        f"❓ {sender_link}, точно хочешь перевести <b>{format_number(amount)} MP </b>игроку {target_link}?"
+        _lf('❓ {0}, точно хочешь перевести <b>{1} MP </b>игроку {2}?', (_fmt(sender_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(target_link, '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Да ✅",
+                    text=_l('Да ✅'),
                     callback_data=f"mp_yes_{confirm_token}",
                     style="success"
                 ),
                 InlineKeyboardButton(
-                    text="Нет 💢",
+                    text=_l('Нет 💢'),
                     callback_data=f"mp_no_{confirm_token}",
                     style="danger"
                 )
@@ -13979,11 +13499,12 @@ async def cmd_send_mp(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("mp_no_")))
+@_localized
 async def process_mp_no(callback: types.CallbackQuery):
     token = callback.data.split("_")[-1]
     transfer = mp_pending_transfers.get(token)
     if transfer and callback.from_user.id != transfer["sender_id"]:
-        await callback.answer("Это действие не для вас!", show_alert=True)
+        await callback.answer(_l('Это действие не для вас!'), show_alert=True)
         return
 
     mp_pending_transfers.pop(token, None)
@@ -13995,15 +13516,16 @@ async def process_mp_no(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("mp_yes_")))
+@_localized
 async def process_mp_yes(callback: types.CallbackQuery):
     token = callback.data.split("_")[-1]
     transfer = mp_pending_transfers.get(token)
     if not transfer:
-        await callback.answer("Перевод устарел или уже выполнен!", show_alert=True)
+        await callback.answer(_l('Перевод устарел или уже выполнен!'), show_alert=True)
         return
 
     if callback.from_user.id != transfer["sender_id"]:
-        await callback.answer("Это действие не для вас!", show_alert=True)
+        await callback.answer(_l('Это действие не для вас!'), show_alert=True)
         return
 
     sender_id = transfer["sender_id"]
@@ -14015,21 +13537,21 @@ async def process_mp_yes(callback: types.CallbackQuery):
 
     sender_mp_before = sender_data.get("mp_balance", 0) or 0
     if sender_mp_before < amount:
-        await callback.answer("Недостаточно MP на балансе!", show_alert=True)
+        await callback.answer(_l('Недостаточно MP на балансе!'), show_alert=True)
         return
 
     rem_limit = get_user_mp_limit(sender_data)
     if amount > rem_limit:
-        await callback.answer("Превышен суточный лимит переводов!", show_alert=True)
+        await callback.answer(_l('Превышен суточный лимит переводов!'), show_alert=True)
         return
 
     if is_transfer_banned(sender_id) or is_transfer_banned(receiver_id):
-        await callback.answer("Переводы заблокированы!", show_alert=True)
+        await callback.answer(_l('Переводы заблокированы!'), show_alert=True)
         return
 
     allowed, limit_error = reserve_admin_usage(sender_id, "mp_transfer", amount)
     if not allowed:
-        await callback.answer(limit_error or "Операция запрещена.", show_alert=True)
+        await callback.answer(limit_error or _l('Операция запрещена.'), show_alert=True)
         return
 
     sender_mp_after = sender_mp_before - amount
@@ -14045,21 +13567,18 @@ async def process_mp_yes(callback: types.CallbackQuery):
     new_rem_limit = max(0, 1000 - new_daily_transferred)
 
     if not _apply_mp_transfer(sender_id, receiver_id, amount, today_str):
-        await callback.answer("Не удалось выполнить перевод. Средства не списаны.", show_alert=True)
+        await callback.answer(_l('Не удалось выполнить перевод. Средства не списаны.'), show_alert=True)
         return
     mp_pending_transfers.pop(token, None)
 
-    sender_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    sender_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     sender_link = f'<a href="tg://user?id={sender_id}">{sender_name}</a>'
     target_raw_name = transfer.get("target_name") or get_user_display_name(receiver_id)
     target_name = html.escape(get_user_display_name(receiver_id, target_raw_name))
     target_link = f'<a href="tg://user?id={receiver_id}">{target_name}</a>'
 
     success_msg = (
-        f"🔹 {sender_link} перевел(-а) <b>{format_number(amount)} MP </b> {target_link}. \n"
-        f"<blockquote>📮 Лимит: {format_number(new_rem_limit)} MP</blockquote>\n"
-        f"<code>·····················</code>\n"
-        f"💎 Баланс: <s>{format_number(sender_mp_before)}</s> → {format_number(sender_mp_after)} MP"
+        _lf('🔹 {0} перевел(-а) <b>{1} MP </b> {2}. \n<blockquote>📮 Лимит: {3} MP</blockquote>\n<code>·····················</code>\n💎 Баланс: <s>{4}</s> → {5} MP', (_fmt(sender_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(target_link, '', -1), _fmt(format_number(new_rem_limit), '', -1), _fmt(format_number(sender_mp_before), '', -1), _fmt(format_number(sender_mp_after), '', -1)))
     )
 
     try:
@@ -14071,10 +13590,10 @@ async def process_mp_yes(callback: types.CallbackQuery):
     except Exception:
         pass
 
-    await callback.answer("Перевод выполнен!")
+    await callback.answer(_l('Перевод выполнен!'))
 
     try:
-        receiver_pm = f"✅ Поступил перевод в размере {format_number(amount)} MP от {sender_link}."
+        receiver_pm = _lf('✅ Поступил перевод в размере {0} MP от {1}.', (_fmt(format_number(amount), '', -1), _fmt(sender_link, '', -1)), user_id=receiver_id)
         await bot.send_message(
             chat_id=receiver_id,
             text=receiver_pm,
@@ -14085,20 +13604,21 @@ async def process_mp_yes(callback: types.CallbackQuery):
 
 
 @dp.message(Command("addmp"))
+@_localized
 async def cmd_addmp(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
     if not args:
-        await message.answer("<i>Использование: /addmp [сумма] или в ответ на сообщение</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /addmp [сумма] или в ответ на сообщение</i>'), parse_mode=ParseMode.HTML)
         return
 
     amount = parse_amount(args[0])
     if amount is None:
-        await message.answer("<i>Неверная сумма!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверная сумма!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -14109,7 +13629,7 @@ async def cmd_addmp(message: types.Message):
         if target_arg.startswith("@"):
             found = get_user_by_username(target_arg.lstrip("@"))
             if not found:
-                await message.answer("<i>Пользователь не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Пользователь не найден!</i>'), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = target_arg
@@ -14119,44 +13639,44 @@ async def cmd_addmp(message: types.Message):
         else:
             found = get_user_by_username(target_arg)
             if not found:
-                await message.answer("<i>Пользователь не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Пользователь не найден!</i>'), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{target_arg}"
     else:
         target_user_id = user_id
-        target_name = "ваш"
+        target_name = None
 
     allowed, limit_error = reserve_admin_usage(user_id, "mp_issue", amount)
     if not allowed:
-        await message.reply(f"<i>{html.escape(limit_error or 'Операция запрещена.')}</i>", parse_mode=ParseMode.HTML)
+        await message.reply(_lf('<i>{0}</i>', (_fmt(html.escape(limit_error or _l('Операция запрещена.')), '', -1),)), parse_mode=ParseMode.HTML)
         return
 
     u_data = get_user(target_user_id)
     new_bal = u_data.get("mp_balance", 0) + amount
     update_user(target_user_id, mp_balance=new_bal)
     await message.reply(
-        f"<i>✅ На баланс {html.escape(get_user_display_name(target_user_id, target_name) if target_name != 'ваш' else target_name)} добавлено <b>{format_number(amount)} MP</b>\n"
-        f"💎 Текущий баланс: <b>{format_number(new_bal)} MP</b></i>",
+        _lf('<i>✅ На баланс {0} добавлено <b>{1} MP</b>\n💎 Текущий баланс: <b>{2} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(new_bal), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("setmp"))
+@_localized
 async def cmd_setmp(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS or not admin_has_permission(user_id, "set"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
     if not args:
-        await message.answer("<i>Использование: /setmp [сумма] или в ответ на сообщение</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /setmp [сумма] или в ответ на сообщение</i>'), parse_mode=ParseMode.HTML)
         return
 
     amount = parse_amount(args[0])
     if amount is None or amount < 0:
-        await message.answer("<i>Неверная сумма!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверная сумма!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if message.reply_to_message and message.reply_to_message.from_user:
@@ -14167,7 +13687,7 @@ async def cmd_setmp(message: types.Message):
         if target_arg.startswith("@"):
             found = get_user_by_username(target_arg.lstrip("@"))
             if not found:
-                await message.answer("<i>Пользователь не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Пользователь не найден!</i>'), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = target_arg
@@ -14177,18 +13697,18 @@ async def cmd_setmp(message: types.Message):
         else:
             found = get_user_by_username(target_arg)
             if not found:
-                await message.answer("<i>Пользователь не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_l('<i>Пользователь не найден!</i>'), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{target_arg}"
     else:
         target_user_id = user_id
-        target_name = "ваш"
+        target_name = None
 
     get_user(target_user_id)
     update_user(target_user_id, mp_balance=amount)
     await message.reply(
-        f"<i>✅ Баланс MP {html.escape(get_user_display_name(target_user_id, target_name) if target_name != 'ваш' else target_name)} установлен на <b>{format_number(amount)} MP</b></i>",
+        _lf('<i>✅ Баланс MP {0} установлен на <b>{1} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
@@ -14203,35 +13723,37 @@ giveaway_counter = 0
     message.text.lower().startswith("раздача") or
     message.text.lower().startswith("/раздача") or
     message.text.lower().startswith("роздача") or
-    message.text.lower().startswith("/giveaway")
+    message.text.lower().startswith("/giveaway") or
+    message.text.strip().lower() == "giveaway" or
+    message.text.strip().lower().startswith("giveaway ")
 )))
+@_localized
 async def cmd_giveaway(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()
     if len(args) < 3:
         await message.answer(
-            "<i>Использование: раздача [сумма] [акт]\n"
-            "Пример: <code>раздача 10кк 10</code></i>",
+            _l('<i>Использование: раздача [сумма] [акт]\nПример: <code>раздача 10кк 10</code></i>'),
             parse_mode=ParseMode.HTML
         )
         return
 
     amount = parse_amount(args[1])
     if amount is None or amount <= 0:
-        await message.answer("<i>Неверная сумма! Пример: <code>раздача 10кк 10</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неверная сумма! Пример: <code>раздача 10кк 10</code></i>'), parse_mode=ParseMode.HTML)
         return
 
     try:
         activations = int(args[2])
         if activations <= 0:
-            await message.answer("<i>Количество активаций должно быть больше 0!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Количество активаций должно быть больше 0!</i>'), parse_mode=ParseMode.HTML)
             return
     except ValueError:
-        await message.answer("<i>Количество активаций должно быть числом! Пример: <code>раздача 10кк 10</code></i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Количество активаций должно быть числом! Пример: <code>раздача 10кк 10</code></i>'), parse_mode=ParseMode.HTML)
         return
 
     global giveaway_counter
@@ -14255,16 +13777,14 @@ async def cmd_giveaway(message: types.Message):
     active_giveaways[chat_id] = gid
 
     text = (
-        f'<tg-emoji emoji-id="5287231198098117669">💰</tg-emoji>Новая раздача на <b>{activations}</b> акт.\n'
-        f'Сумма награды: <b>{format_number(amount)} m¢</b>\n\n'
-        f'<i>Чтобы забрать награду, нажми на кнопку ниже!</i>'
+        _lf('<tg-emoji emoji-id="5287231198098117669">💰</tg-emoji>Новая раздача на <b>{0}</b> акт.\nСумма награды: <b>{1} m¢</b>\n\n<i>Чтобы забрать награду, нажми на кнопку ниже!</i>', (_fmt(activations, '', -1), _fmt(format_number(amount), '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Взять",
+                    text=_l('Взять'),
                     callback_data=f"giveaway_claim_{gid}",
                     style="success",
                     icon_custom_emoji_id="5278467510604160626"
@@ -14288,11 +13808,12 @@ async def cmd_giveaway(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("giveaway_claim_")))
+@_localized
 async def process_giveaway_claim(callback: types.CallbackQuery):
     try:
         gid = int(callback.data.split("_")[-1])
     except (ValueError, IndexError):
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     user_id = callback.from_user.id
@@ -14301,7 +13822,7 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
     giveaway = giveaways.get(gid)
     if not giveaway:
         try:
-            await callback.answer("Эта раздача устарела!", show_alert=True)
+            await callback.answer(_l('Эта раздача устарела!'), show_alert=True)
         except Exception:
             pass
         return
@@ -14309,21 +13830,21 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
     current_gid = active_giveaways.get(chat_id)
     if current_gid != gid or not giveaway["is_active"]:
         try:
-            await callback.answer("Эта раздача устарела!", show_alert=True)
+            await callback.answer(_l('Эта раздача устарела!'), show_alert=True)
         except Exception:
             pass
         return
 
     if user_id in giveaway["claimed_users"]:
         try:
-            await callback.answer("Вы уже забрали эту награду!", show_alert=True)
+            await callback.answer(_l('Вы уже забрали эту награду!'), show_alert=True)
         except Exception:
             pass
         return
 
     if giveaway["remaining_activations"] <= 0:
         try:
-            await callback.answer("Раздача окончена! Активации закончились.", show_alert=True)
+            await callback.answer(_l('Раздача окончена! Активации закончились.'), show_alert=True)
         except Exception:
             pass
         return
@@ -14335,19 +13856,19 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
     user_data = get_user(user_id)
     update_user(user_id, balance=user_data["balance"] + amount)
 
-    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     try:
         await callback.message.reply(
-            f'<i>{user_link}, вы получили <b>{format_number(amount)} m¢</b>!</i>',
+            _lf('<i>{0}, вы получили <b>{1} m¢</b>!</i>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception:
         pass
 
     try:
-        await callback.answer(f"Вы получили {format_number(amount)} m¢!")
+        await callback.answer(_lf('Вы получили {0} m¢!', (_fmt(format_number(amount), '', -1),)))
     except Exception:
         pass
 
@@ -14355,9 +13876,7 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
         giveaway["is_active"] = False
         try:
             finished_text = (
-                f'<tg-emoji emoji-id="5287231198098117669">💰</tg-emoji><b>Раздача окончена!</b>\n'
-                f'Сумма награды: <b>{format_number(amount)} m¢</b>\n'
-                f'Все {giveaway["total_activations"]} активаций были забраны.'
+                _lf('<tg-emoji emoji-id="5287231198098117669">💰</tg-emoji><b>Раздача окончена!</b>\nСумма награды: <b>{0} m¢</b>\nВсе {1} активаций были забраны.', (_fmt(format_number(amount), '', -1), _fmt(giveaway['total_activations'], '', -1)))
             )
             await callback.message.edit_text(
                 text=finished_text,
@@ -14412,6 +13931,7 @@ async def _send_demo_status(target, user_id, edit=False):
 
 
 @dp.message(Command("demo", "демо"))
+@_localized
 async def cmd_demo(message: types.Message):
     user_id = message.from_user.id
     if message.chat.type != "private":
@@ -14426,6 +13946,7 @@ async def cmd_demo(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ("demo_on", "demo_off")))
+@_localized
 async def process_demo_toggle(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     if callback.message and callback.message.chat.type != "private":
@@ -14433,7 +13954,7 @@ async def process_demo_toggle(callback: types.CallbackQuery):
         return
     enabled = callback.data == "demo_on"
     if not _set_demo_mode(user_id, enabled):
-        await callback.answer("Не удалось сохранить режим.", show_alert=True)
+        await callback.answer(_l('Не удалось сохранить режим.'), show_alert=True)
         return
     await _send_demo_status(callback.message, user_id, edit=True)
     await callback.answer(tr(user_id, "demo_on" if enabled else "demo_off"))
@@ -14509,6 +14030,7 @@ async def _show_settings(target, user_id, edit=False):
 
 @dp.message(Command("settings", "настройки"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings")))
+@_localized
 async def cmd_settings(message: types.Message):
     if message.chat.type != "private":
         await message.answer(f"<i>{tr(message.from_user.id, 'settings_private_only')}</i>", parse_mode=ParseMode.HTML)
@@ -14562,6 +14084,7 @@ async def _handle_settings_callback(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda callback: bool(callback.data and (callback.data == "settings_open" or callback.data.startswith("settings_")))))
+@_localized
 async def process_settings_callback(callback: types.CallbackQuery):
     await _handle_settings_callback(callback)
 
@@ -14575,7 +14098,7 @@ async def _handle_settings_text(message: types.Message):
     user_id = int(message.from_user.id)
     settings_nickname_pending.discard(user_id)
     value = (message.text or "").strip()
-    if value.lower() in {"сброс", "сбросить", "reset", "clear", "тазалау"}:
+    if value.lower() in {"сброс", "сбросить", "reset", "clear", "тазалау", "скинути", "очистити"}:
         set_user_settings(user_id, bot_nickname=None)
         await message.answer(tr(user_id, "settings_name_cleared"), parse_mode=ParseMode.HTML)
     elif not 2 <= len(value) <= 32 or "\n" in value:
@@ -14596,15 +14119,14 @@ def resolve_user_id_argument(raw):
 
 
 @dp.message(Command("owners", "owner", "овнеры", "овнер"))
+@_localized
 async def cmd_owners(message: types.Message):
     if not is_admin(message.from_user.id):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
     owners_text = ", ".join(f"<code>{uid}</code>" for uid in sorted(OWNER_IDS))
     await message.answer(
-        f"<b>👑 Owners</b>\n{owners_text}\n\n"
-        f"Администраторов: <b>{len(ADMINS)}</b>\n"
-        "Лимит 0 означает безлимит. Изменять лимиты и права могут только owners.",
+        _lf('<b>👑 Owners</b>\n{0}\n\nАдминистраторов: <b>{1}</b>\nЛимит 0 означает безлимит. Изменять лимиты и права могут только owners.', (_fmt(owners_text, '', -1), _fmt(len(ADMINS), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
@@ -14617,102 +14139,97 @@ def _admin_control_ids(owner_id):
     return sorted({int(uid) for uid in admin_control_selections.get(owner_id, set()) if uid in ADMINS and not is_owner(uid)})
 
 
+@_localized
 def _admin_control_keyboard(owner_id):
     selected = set(_admin_control_ids(owner_id))
     rows = []
     for admin_id in ADMINS:
         if is_owner(admin_id):
-            rows.append([InlineKeyboardButton(text=f"👑 {admin_id} · owner", callback_data="admctl_noop", style="primary")])
+            rows.append([InlineKeyboardButton(text=f"👑 {admin_id} · {_l('Владелец')}", callback_data="admctl_noop", style="primary")])
         else:
             mark = "✅" if admin_id in selected else "⬜"
             rows.append([InlineKeyboardButton(text=f"{mark} {admin_id}", callback_data=f"admctl_sel_{admin_id}", style="primary")])
     rows.extend([
         [
-            InlineKeyboardButton(text="Выбрать всех", callback_data="admctl_sel_all", style="primary"),
-            InlineKeyboardButton(text="Снять выбор", callback_data="admctl_sel_clear", style="danger"),
+            InlineKeyboardButton(text=_l('Выбрать всех'), callback_data="admctl_sel_all", style="primary"),
+            InlineKeyboardButton(text=_l('Снять выбор'), callback_data="admctl_sel_clear", style="danger"),
         ],
-        [InlineKeyboardButton(text=f"Настроить выбранных ({len(selected)})", callback_data="admctl_actions", style="success")],
+        [InlineKeyboardButton(text=_lf('Настроить выбранных ({0})', (_fmt(len(selected), '', -1),)), callback_data="admctl_actions", style="success")],
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+@_localized
 def _admin_control_text(owner_id):
     selected = _admin_control_ids(owner_id)
     return (
-        "<b>🛡 Контроль администраторов</b>\n"
-        "Выберите одного или сразу нескольких обычных администраторов. "
-        "Owners не ограничиваются и отображаются отдельно.\n\n"
-        f"Выбрано: <b>{len(selected)}</b>\n"
-        "После выбора можно массово включить или отключить права. "
-        "Лимиты задаются командами <code>/adminlimit</code> — их можно применять к списку ID через запятую."
+        _lf('<b>🛡 Контроль администраторов</b>\nВыберите одного или сразу нескольких обычных администраторов. Owners не ограничиваются и отображаются отдельно.\n\nВыбрано: <b>{0}</b>\nПосле выбора можно массово включить или отключить права. Лимиты задаются командами <code>/adminlimit</code> — их можно применять к списку ID через запятую.', (_fmt(len(selected), '', -1),))
     )
 
 
+@_localized
 def _admin_action_keyboard(owner_id):
     selected = _admin_control_ids(owner_id)
     if not selected:
-        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="← К выбору администраторов", callback_data="admctl_back", style="primary")]])
+        return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('← К выбору администраторов'), callback_data="admctl_back", style="primary")]])
     return InlineKeyboardMarkup(inline_keyboard=[
         [
-            InlineKeyboardButton(text="✅ Бан разрешить", callback_data="admctl_perm_ban_1", style="success"),
-            InlineKeyboardButton(text="⛔ Бан запретить", callback_data="admctl_perm_ban_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ Бан разрешить'), callback_data="admctl_perm_ban_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ Бан запретить'), callback_data="admctl_perm_ban_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="✅ Передачи разрешить", callback_data="admctl_perm_transfer_1", style="success"),
-            InlineKeyboardButton(text="⛔ Передачи запретить", callback_data="admctl_perm_transfer_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ Передачи разрешить'), callback_data="admctl_perm_transfer_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ Передачи запретить'), callback_data="admctl_perm_transfer_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="✅ Выдачу разрешить", callback_data="admctl_perm_issue_1", style="success"),
-            InlineKeyboardButton(text="⛔ Выдачу запретить", callback_data="admctl_perm_issue_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ Выдачу разрешить'), callback_data="admctl_perm_issue_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ Выдачу запретить'), callback_data="admctl_perm_issue_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="✅ Set разрешить", callback_data="admctl_perm_set_1", style="success"),
-            InlineKeyboardButton(text="⛔ Set запретить", callback_data="admctl_perm_set_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ Set разрешить'), callback_data="admctl_perm_set_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ Set запретить'), callback_data="admctl_perm_set_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="✅ MP-переводы разрешить", callback_data="admctl_perm_mp_transfer_1", style="success"),
-            InlineKeyboardButton(text="⛔ MP-переводы запретить", callback_data="admctl_perm_mp_transfer_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ MP-переводы разрешить'), callback_data="admctl_perm_mp_transfer_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ MP-переводы запретить'), callback_data="admctl_perm_mp_transfer_0", style="danger"),
         ],
         [
-            InlineKeyboardButton(text="✅ MP-выдачу разрешить", callback_data="admctl_perm_mp_issue_1", style="success"),
-            InlineKeyboardButton(text="⛔ MP-выдачу запретить", callback_data="admctl_perm_mp_issue_0", style="danger"),
+            InlineKeyboardButton(text=_l('✅ MP-выдачу разрешить'), callback_data="admctl_perm_mp_issue_1", style="success"),
+            InlineKeyboardButton(text=_l('⛔ MP-выдачу запретить'), callback_data="admctl_perm_mp_issue_0", style="danger"),
         ],
-        [InlineKeyboardButton(text="📊 Изменить лимиты", callback_data="admctl_limit_start", style="primary")],
-        [InlineKeyboardButton(text="← Назад к выбору", callback_data="admctl_back", style="primary")],
+        [InlineKeyboardButton(text=_l('📊 Изменить лимиты'), callback_data="admctl_limit_start", style="primary")],
+        [InlineKeyboardButton(text=_l('← Назад к выбору'), callback_data="admctl_back", style="primary")],
     ])
 
 
 @dp.message(Command("adminlist", "списокадминов", "админы"))
+@_localized
 async def cmd_admin_list(message: types.Message):
     if not is_owner(message.from_user.id):
-        await message.answer("<i>Только owners могут просматривать настройки администраторов.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Только owners могут просматривать настройки администраторов.</i>'), parse_mode=ParseMode.HTML)
         return
-    lines = ["<b>🛡 Настройки администраторов</b>"]
+    lines = [_l('<b>🛡 Настройки администраторов</b>')]
     for admin_id in ADMINS:
         control = get_admin_control(admin_id)
-        role = "👑 owner" if is_owner(admin_id) else "admin"
+        role = "👑 " + _l('Владелец') if is_owner(admin_id) else _l('Администратор')
         perms = []
-        for key, label in (("can_ban", "бан"), ("can_transfer", "передачи"), ("can_issue", "выдача"), ("can_set", "set"), ("can_mp_transfer", "MP-передачи"), ("can_mp_issue", "MP-выдача")):
+        for key, label in (("can_ban", _l('бан')), ("can_transfer", _l('передачи')), ("can_issue", _l('выдача')), ("can_set", _l('установка')), ("can_mp_transfer", _l('MP-передачи')), ("can_mp_issue", _l('MP-выдача'))):
             if control.get(key):
                 perms.append(label)
         lines.append(
-            f"\n• <code>{admin_id}</code> — {role}\n"
-            f"  mCoin передача: {format_number(control.get('transfer_limit', 0)) if control.get('transfer_limit', 0) else '∞'}/д.\n"
-            f"  mCoin выдача: {format_number(control.get('issue_limit', 0)) if control.get('issue_limit', 0) else '∞'}/д.\n"
-            f"  MP передача: {format_number(control.get('mp_transfer_limit', 0)) if control.get('mp_transfer_limit', 0) else '∞'}/д.\n"
-            f"  MP выдача: {format_number(control.get('mp_issue_limit', 0)) if control.get('mp_issue_limit', 0) else '∞'}/д.\n"
-            f"  права: {', '.join(perms) if perms else 'нет'}"
+            _lf('\n• <code>{0}</code> — {1}\n  mCoin передача: {2}/д.\n  mCoin выдача: {3}/д.\n  MP передача: {4}/д.\n  MP выдача: {5}/д.\n  права: {6}', (_fmt(admin_id, '', -1), _fmt(role, '', -1), _fmt(format_number(control.get('transfer_limit', 0)) if control.get('transfer_limit', 0) else '∞', '', -1), _fmt(format_number(control.get('issue_limit', 0)) if control.get('issue_limit', 0) else '∞', '', -1), _fmt(format_number(control.get('mp_transfer_limit', 0)) if control.get('mp_transfer_limit', 0) else '∞', '', -1), _fmt(format_number(control.get('mp_issue_limit', 0)) if control.get('mp_issue_limit', 0) else '∞', '', -1), _fmt(', '.join(perms) if perms else _l('нет'), '', -1)))
         )
     await message.answer("".join(lines), parse_mode=ParseMode.HTML, reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="⚙️ Контролировать администраторов", callback_data="admctl_open", style="primary")]
+        [InlineKeyboardButton(text=_l('⚙️ Контролировать администраторов'), callback_data="admctl_open", style="primary")]
     ]))
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("admctl_")))
+@_localized
 async def process_admin_control_callback(callback: types.CallbackQuery):
     owner_id = callback.from_user.id
     if not is_owner(owner_id):
-        await callback.answer("Только owners могут управлять администраторами.", show_alert=True)
+        await callback.answer(_l('Только owners могут управлять администраторами.'), show_alert=True)
         return
     data = callback.data
     selected = admin_control_selections.setdefault(owner_id, set())
@@ -14737,12 +14254,10 @@ async def process_admin_control_callback(callback: types.CallbackQuery):
     elif data == "admctl_actions":
         targets = _admin_control_ids(owner_id)
         if not targets:
-            await callback.answer("Сначала выберите хотя бы одного администратора.", show_alert=True)
+            await callback.answer(_l('Сначала выберите хотя бы одного администратора.'), show_alert=True)
             return
         await callback.message.edit_text(
-            "<b>⚙️ Массовое управление</b>\n"
-            f"Выбрано администраторов: <code>{', '.join(str(x) for x in targets)}</code>\n\n"
-            "Нажмите действие — оно применится ко всем выбранным. Лимиты можно назначить командой из отдельной кнопки.",
+            _lf('<b>⚙️ Массовое управление</b>\nВыбрано администраторов: <code>{0}</code>\n\nНажмите действие — оно применится ко всем выбранным. Лимиты можно назначить командой из отдельной кнопки.', (_fmt(', '.join((str(x) for x in targets)), '', -1),)),
             parse_mode=ParseMode.HTML,
             reply_markup=_admin_action_keyboard(owner_id)
         )
@@ -14754,52 +14269,47 @@ async def process_admin_control_callback(callback: types.CallbackQuery):
             targets = _admin_control_ids(owner_id)
             done = sum(1 for admin_id in targets if set_admin_permission(admin_id, permission, enabled, owner_id))
             await callback.message.edit_text(
-                f"<b>✅ Готово</b>\nПраво <b>{html.escape(permission)}</b> "
-                f"{'разрешено' if enabled else 'запрещено'} для {done} администраторов.",
+                _lf('<b>✅ Готово</b>\nПраво <b>{0}</b> {1} для {2} администраторов.', (_fmt(html.escape(permission), '', -1), _fmt(_l('разрешено') if enabled else _l('запрещено'), '', -1), _fmt(done, '', -1))),
                 parse_mode=ParseMode.HTML,
                 reply_markup=_admin_action_keyboard(owner_id)
             )
     elif data in ("admctl_limit_help", "admctl_limit_start"):
         targets = _admin_control_ids(owner_id)
         if not targets:
-            await callback.answer("Сначала выберите администраторов.", show_alert=True)
+            await callback.answer(_l('Сначала выберите администраторов.'), show_alert=True)
             return
         admin_limit_sessions[owner_id] = {"targets": targets, "kind": None}
         await callback.message.edit_text(
-            "<b>📊 Изменение суточных лимитов</b>\n"
-            f"Выбраны: <code>{', '.join(str(x) for x in targets)}</code>\n"
-            "Выберите тип операции, затем отправьте сумму. 0 — безлимит.",
+            _lf('<b>📊 Изменение суточных лимитов</b>\nВыбраны: <code>{0}</code>\nВыберите тип операции, затем отправьте сумму. 0 — безлимит.', (_fmt(', '.join((str(x) for x in targets)), '', -1),)),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="mCoin передачи", callback_data="admctl_limit_kind_transfer", style="primary"),
-                    InlineKeyboardButton(text="mCoin выдача", callback_data="admctl_limit_kind_issue", style="primary"),
+                    InlineKeyboardButton(text=_l('mCoin передачи'), callback_data="admctl_limit_kind_transfer", style="primary"),
+                    InlineKeyboardButton(text=_l('mCoin выдача'), callback_data="admctl_limit_kind_issue", style="primary"),
                 ],
                 [
-                    InlineKeyboardButton(text="MP передачи", callback_data="admctl_limit_kind_mp_transfer", style="primary"),
-                    InlineKeyboardButton(text="MP выдача", callback_data="admctl_limit_kind_mp_issue", style="primary"),
+                    InlineKeyboardButton(text=_l('MP передачи'), callback_data="admctl_limit_kind_mp_transfer", style="primary"),
+                    InlineKeyboardButton(text=_l('MP выдача'), callback_data="admctl_limit_kind_mp_issue", style="primary"),
                 ],
                 [
-                    InlineKeyboardButton(text="Оба mCoin", callback_data="admctl_limit_kind_both", style="primary"),
-                    InlineKeyboardButton(text="Все операции", callback_data="admctl_limit_kind_all", style="primary"),
+                    InlineKeyboardButton(text=_l('Оба mCoin'), callback_data="admctl_limit_kind_both", style="primary"),
+                    InlineKeyboardButton(text=_l('Все операции'), callback_data="admctl_limit_kind_all", style="primary"),
                 ],
-                [InlineKeyboardButton(text="← Назад", callback_data="admctl_back", style="primary")],
+                [InlineKeyboardButton(text=_l('← Назад'), callback_data="admctl_back", style="primary")],
             ])
         )
     elif data.startswith("admctl_limit_kind_"):
         kind = data[len("admctl_limit_kind_"):]
         session = admin_limit_sessions.get(owner_id)
         if not session or kind not in ("transfer", "issue", "mp_transfer", "mp_issue", "both", "all"):
-            await callback.answer("Сессия устарела.", show_alert=True)
+            await callback.answer(_l('Сессия устарела.'), show_alert=True)
             return
         session["kind"] = kind
         await callback.message.edit_text(
-            "<b>Введите сумму лимита</b>\n"
-            f"Тип: <code>{html.escape(kind)}</code>\n"
-            "Пример: <code>10кк</code>. Для снятия лимита отправьте <code>0</code>.",
+            _lf('<b>Введите сумму лимита</b>\nТип: <code>{0}</code>\nПример: <code>10кк</code>. Для снятия лимита отправьте <code>0</code>.', (_fmt(html.escape(kind), '', -1),)),
             parse_mode=ParseMode.HTML,
             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
-                [InlineKeyboardButton(text="← Назад к выбору типа", callback_data="admctl_limit_start", style="primary")],
+                [InlineKeyboardButton(text=_l('← Назад к выбору типа'), callback_data="admctl_limit_start", style="primary")],
             ])
         )
     elif data == "admctl_back":
@@ -14808,6 +14318,7 @@ async def process_admin_control_callback(callback: types.CallbackQuery):
 
 
 @dp.message(_inline_filter(lambda message: message.from_user and message.from_user.id in admin_limit_sessions and message.text))
+@_localized
 async def process_admin_limit_input(message: types.Message):
     owner_id = message.from_user.id
     if not is_owner(owner_id):
@@ -14823,31 +14334,26 @@ async def process_admin_limit_input(message: types.Message):
     else:
         amount = parse_amount(raw_amount)
         if amount is None or amount < 0:
-            await message.reply("<i>Неверная сумма. Отправьте число, например <code>10кк</code>, или <code>0</code>.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Неверная сумма. Отправьте число, например <code>10кк</code>, или <code>0</code>.</i>'), parse_mode=ParseMode.HTML)
             return
     changed = [uid for uid in session.get("targets", []) if set_admin_limit(uid, kind, amount, owner_id)]
     admin_limit_sessions.pop(owner_id, None)
     await message.reply(
-        f"<i>✅ Лимит <b>{html.escape(kind)}</b> для <code>{', '.join(str(x) for x in changed)}</code>: "
-        f"<b>{format_number(amount) if amount else 'безлимит'}</b> в сутки.</i>",
+        _lf('<i>✅ Лимит <b>{0}</b> для <code>{1}</code>: <b>{2}</b> в сутки.</i>', (_fmt(html.escape(kind), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1), _fmt(format_number(amount) if amount else _l('безлимит'), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("adminlimit", "админлимит", "admin_limit"))
+@_localized
 async def cmd_admin_limit(message: types.Message):
     if not is_owner(message.from_user.id):
-        await message.answer("<i>Только owners могут назначать лимиты.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Только owners могут назначать лимиты.</i>'), parse_mode=ParseMode.HTML)
         return
     args = (message.text or "").split()[1:]
     if len(args) < 2:
         await message.answer(
-            "<i>Использование:\n"
-            "<code>/adminlimit ID[,ID] transfer 10кк</code> — mCoin передача\n"
-            "<code>/adminlimit ID[,ID] issue 10кк</code> — mCoin выдача\n"
-            "<code>/adminlimit ID[,ID] mp_transfer 1000</code> — MP передача\n"
-            "<code>/adminlimit ID[,ID] mp_issue 1000</code> — MP выдача\n"
-            "<code>both</code> — оба mCoin, <code>all</code> — все четыре, 0 — безлимит.</i>",
+            _l('<i>Использование:\n<code>/adminlimit ID[,ID] transfer 10кк</code> — mCoin передача\n<code>/adminlimit ID[,ID] issue 10кк</code> — mCoin выдача\n<code>/adminlimit ID[,ID] mp_transfer 1000</code> — MP передача\n<code>/adminlimit ID[,ID] mp_issue 1000</code> — MP выдача\n<code>both</code> — оба mCoin, <code>all</code> — все четыре, 0 — безлимит.</i>'),
             parse_mode=ParseMode.HTML
         )
         return
@@ -14855,7 +14361,7 @@ async def cmd_admin_limit(message: types.Message):
     for raw_id in args[0].split(","):
         target_id = resolve_user_id_argument(raw_id)
         if target_id is None or target_id not in ADMINS or is_owner(target_id):
-            await message.answer("<i>Укажите ID обычных администраторов, не owners.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Укажите ID обычных администраторов, не owners.</i>'), parse_mode=ParseMode.HTML)
             return
         target_ids.append(target_id)
     if len(args) == 2:
@@ -14868,34 +14374,33 @@ async def cmd_admin_limit(message: types.Message):
         "mp-оба": "mp_both", "все": "all"
     }.get(kind, kind)
     if kind not in ("transfer", "issue", "both", "mp_transfer", "mp_issue", "mp_both", "all"):
-        await message.answer("<i>Тип: transfer, issue, both, mp_transfer, mp_issue, mp_both или all.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Тип: transfer, issue, both, mp_transfer, mp_issue, mp_both или all.</i>'), parse_mode=ParseMode.HTML)
         return
     if raw_amount.lower() in ("0", "off", "нет", "безлимит", "unlimited", "∞"):
         amount = 0
     else:
         amount = parse_amount(raw_amount)
         if amount is None or amount < 0:
-            await message.answer("<i>Неверная сумма лимита.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверная сумма лимита.</i>'), parse_mode=ParseMode.HTML)
             return
     changed = [uid for uid in target_ids if set_admin_limit(uid, kind, amount, message.from_user.id)]
-    title = {"transfer": "mCoin передачи", "issue": "mCoin выдачи", "both": "mCoin передачи и выдачи", "mp_transfer": "MP передачи", "mp_issue": "MP выдачи", "mp_both": "MP передачи и выдачи", "all": "все операции"}[kind]
+    title = {"transfer": _l('mCoin передачи'), "issue": _l('mCoin выдачи'), "both": _l('mCoin передачи и выдачи'), "mp_transfer": _l('MP передачи'), "mp_issue": _l('MP выдачи'), "mp_both": _l('MP передачи и выдачи'), "all": _l('все операции')}[kind]
     await message.answer(
-        f"<i>✅ Для {len(changed)} администраторов (<code>{', '.join(str(x) for x in changed)}</code>) установлен лимит "
-        f"{title}: <b>{format_number(amount) if amount else 'безлимит'}</b> в сутки.</i>",
+        _lf('<i>✅ Для {0} администраторов (<code>{1}</code>) установлен лимит {2}: <b>{3}</b> в сутки.</i>', (_fmt(len(changed), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1), _fmt(title, '', -1), _fmt(format_number(amount) if amount else _l('безлимит'), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("adminperm", "админправа", "adminrights"))
+@_localized
 async def cmd_admin_permission(message: types.Message):
     if not is_owner(message.from_user.id):
-        await message.answer("<i>Только owners могут изменять права администраторов.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Только owners могут изменять права администраторов.</i>'), parse_mode=ParseMode.HTML)
         return
     args = (message.text or "").split()[1:]
     if len(args) < 3:
         await message.answer(
-            "<i>Использование: <code>/adminperm ID[,ID] право on/off</code>\n"
-            "Права: <code>ban</code>, <code>transfer</code>, <code>issue</code>, <code>set</code>, <code>mp_transfer</code>, <code>mp_issue</code>.</i>",
+            _l('<i>Использование: <code>/adminperm ID[,ID] право on/off</code>\nПрава: <code>ban</code>, <code>transfer</code>, <code>issue</code>, <code>set</code>, <code>mp_transfer</code>, <code>mp_issue</code>.</i>'),
             parse_mode=ParseMode.HTML
         )
         return
@@ -14903,47 +14408,47 @@ async def cmd_admin_permission(message: types.Message):
     for raw_id in args[0].split(","):
         target_id = resolve_user_id_argument(raw_id)
         if target_id is None or target_id not in ADMINS or is_owner(target_id):
-            await message.answer("<i>Укажите ID обычных администраторов, не owners.</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Укажите ID обычных администраторов, не owners.</i>'), parse_mode=ParseMode.HTML)
             return
         target_ids.append(target_id)
     permission = {"бан": "ban", "передачи": "transfer", "выдача": "issue", "добавление": "issue", "установка": "set", "мп_передачи": "mp_transfer", "mp-передачи": "mp_transfer", "mp_transfer": "mp_transfer", "мп_выдача": "mp_issue", "mp-выдача": "mp_issue", "mp_issue": "mp_issue"}.get(args[1].lower(), args[1].lower())
     if permission not in _ADMIN_PERMISSION_COLUMNS:
-        await message.answer("<i>Неизвестное право. Доступны: ban, transfer, issue, set, mp_transfer, mp_issue.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Неизвестное право. Доступны: ban, transfer, issue, set, mp_transfer, mp_issue.</i>'), parse_mode=ParseMode.HTML)
         return
     if args[2].lower() not in ("on", "1", "да", "yes", "вкл", "разрешить", "off", "0", "нет", "no", "выкл", "запретить"):
-        await message.answer("<i>Укажите on или off.</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Укажите on или off.</i>'), parse_mode=ParseMode.HTML)
         return
     enabled = args[2].lower() in ("on", "1", "да", "yes", "вкл", "разрешить")
     changed = [uid for uid in target_ids if set_admin_permission(uid, permission, enabled, message.from_user.id)]
     await message.answer(
-        f"<i>✅ Право <b>{html.escape(permission)}</b> {'разрешено' if enabled else 'запрещено'} для "
-        f"<code>{', '.join(str(x) for x in changed)}</code>.</i>",
+        _lf('<i>✅ Право <b>{0}</b> {1} для <code>{2}</code>.</i>', (_fmt(html.escape(permission), '', -1), _fmt(_l('разрешено') if enabled else _l('запрещено'), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 
 @dp.message(Command("ban", "бан"))
+@_localized
 async def cmd_ban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
 
     target_user_id = None
     target_name = None
-    reason = "Не указана"
+    reason = _l('Не указана')
     duration_str = None
 
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
 
         if len(args) == 0:
-            await message.answer("<i>Использование: /ban &lt;причина&gt; &lt;время&gt;\nПример: <code>/ban спам 1ч</code> или <code>/ban нг</code></i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Использование: /ban &lt;причина&gt; &lt;время&gt;\nПример: <code>/ban спам 1ч</code> или <code>/ban нг</code></i>'), parse_mode=ParseMode.HTML)
             return
         elif len(args) == 1:
             duration_str = args[0]
@@ -14952,7 +14457,7 @@ async def cmd_ban(message: types.Message):
             reason = " ".join(args[:-1])
     else:
         if len(args) < 2:
-            await message.answer("<i>Использование: /ban &lt;username/id&gt; &lt;причина&gt; &lt;время&gt;\nПример: <code>/ban @username спам 1ч</code> или <code>/ban @username нг</code></i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Использование: /ban &lt;username/id&gt; &lt;причина&gt; &lt;время&gt;\nПример: <code>/ban @username спам 1ч</code> или <code>/ban @username нг</code></i>'), parse_mode=ParseMode.HTML)
             return
 
         target_arg = args[0]
@@ -14960,7 +14465,7 @@ async def cmd_ban(message: types.Message):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -14973,7 +14478,7 @@ async def cmd_ban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
 
         if len(args) == 2:
@@ -14983,52 +14488,53 @@ async def cmd_ban(message: types.Message):
             reason = " ".join(args[1:-1])
 
     if target_user_id == user_id:
-        await message.answer("<i>Вы не можете забанить самого себя!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Вы не можете забанить самого себя!</i>'), parse_mode=ParseMode.HTML)
         return
 
     if target_user_id in ADMINS:
-        await message.answer("<i>Нельзя забанить администратора!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Нельзя забанить администратора!</i>'), parse_mode=ParseMode.HTML)
         return
 
     delta, is_permanent = parse_ban_duration(duration_str)
 
     if not is_permanent:
         if delta is None:
-            await message.answer("<i>Неверный формат времени! Пример: <code>5мин</code>, <code>1ч</code>, <code>24ч</code>, <code>7д</code>, <code>нг</code></i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Неверный формат времени! Пример: <code>5мин</code>, <code>1ч</code>, <code>24ч</code>, <code>7д</code>, <code>нг</code></i>'), parse_mode=ParseMode.HTML)
             return
         if delta < timedelta(minutes=5):
-            await message.answer("<i>Минимальный бан — 5 минут!</i>", parse_mode=ParseMode.HTML)
+            await message.answer(_l('<i>Минимальный бан — 5 минут!</i>'), parse_mode=ParseMode.HTML)
             return
         until_dt = datetime.now() + delta
         until_text = until_dt.strftime("%d/%m/%Y")
     else:
         until_dt = None
-        until_text = "навсегда"
+        until_text = _l('навсегда')
 
     if ban_user(target_user_id, reason, until_dt, is_permanent):
-        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
         if is_permanent:
             await message.answer(
-                f'<i>{admin_link}, пользователь {target_link} успешно забанен навсегда по причине: {reason}</i>',
+                _lf('<i>{0}, пользователь {1} успешно забанен навсегда по причине: {2}</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1), _fmt(reason, '', -1))),
                 parse_mode=ParseMode.HTML
             )
         else:
             await message.answer(
-                f'<i>{admin_link}, пользователь {target_link} успешно забанен до {until_text} по причине: {reason}</i>',
+                _lf('<i>{0}, пользователь {1} успешно забанен до {2} по причине: {3}</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1), _fmt(until_text, '', -1), _fmt(reason, '', -1))),
                 parse_mode=ParseMode.HTML
             )
     else:
-        await message.answer("<i>Ошибка при блокировке пользователя!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка при блокировке пользователя!</i>'), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("unban", "разбан"))
+@_localized
 async def cmd_unban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15038,14 +14544,14 @@ async def cmd_unban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15058,30 +14564,31 @@ async def cmd_unban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
-        await message.answer("<i>Использование: /unban <username/id> или в ответ на сообщение</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Использование: /unban <username/id> или в ответ на сообщение</i>'), parse_mode=ParseMode.HTML)
         return
 
     if unban_user(target_user_id):
-        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.answer(
-            f'<i>{admin_link}, пользователь {target_link} успешно разбанен.</i>',
+            _lf('<i>{0}, пользователь {1} успешно разбанен.</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1))),
             parse_mode=ParseMode.HTML
         )
     else:
-        await message.answer("<i>Ошибка при разбане пользователя!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Ошибка при разбане пользователя!</i>'), parse_mode=ParseMode.HTML)
 
 
 
 @dp.message(Command("tban"))
+@_localized
 async def cmd_tban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15091,14 +14598,14 @@ async def cmd_tban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15111,28 +14618,29 @@ async def cmd_tban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
     ban_user_top(target_user_id)
-    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
-        f'<i>{admin_link}, пользователь {target_link} успешно заблокирован в топе! 🚫</i>',
+        _lf('<i>{0}, пользователь {1} успешно заблокирован в топе! 🚫</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("untban", "untopban"))
+@_localized
 async def cmd_untban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15142,14 +14650,14 @@ async def cmd_untban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15162,28 +14670,29 @@ async def cmd_untban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
     unban_user_top(target_user_id)
-    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
-        f'<i>{admin_link}, пользователь {target_link} успешно разблокирован в топе! ✅</i>',
+        _lf('<i>{0}, пользователь {1} успешно разблокирован в топе! ✅</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("trban"))
+@_localized
 async def cmd_trban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15193,14 +14702,14 @@ async def cmd_trban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15213,28 +14722,29 @@ async def cmd_trban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
     ban_user_transfers(target_user_id)
-    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
-        f'<i>{admin_link}, пользователю {target_link} успешно заблокированы переводы! 🚫</i>',
+        _lf('<i>{0}, пользователю {1} успешно заблокированы переводы! 🚫</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1))),
         parse_mode=ParseMode.HTML
     )
 
 
 @dp.message(Command("untrban"))
+@_localized
 async def cmd_untrban(message: types.Message):
     user_id = message.from_user.id
     if not admin_has_permission(user_id, "ban"):
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15244,14 +14754,14 @@ async def cmd_untrban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15264,19 +14774,19 @@ async def cmd_untrban(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
     unban_user_transfers(target_user_id)
-    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
-        f'<i>{admin_link}, пользователю {target_link} успешно разблокированы переводы! ✅</i>',
+        _lf('<i>{0}, пользователю {1} успешно разблокированы переводы! ✅</i>', (_fmt(admin_link, '', -1), _fmt(target_link, '', -1))),
         parse_mode=ParseMode.HTML
     )
 
@@ -15284,10 +14794,11 @@ async def cmd_untrban(message: types.Message):
 
 @dp.message(Command("get", "гет"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ["гет", "get", "/get", "/гет"]))
+@_localized
 async def cmd_get(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     text = (message.text or "").strip()
@@ -15300,7 +14811,7 @@ async def cmd_get(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_user_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
+        target_user_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Игрок')
         target_username = target_user.username
     elif len(parts) > 1:
         arg = parts[1]
@@ -15308,7 +14819,7 @@ async def cmd_get(message: types.Message):
             uname = arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.reply(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_username = uname
@@ -15324,11 +14835,11 @@ async def cmd_get(message: types.Message):
                 target_username = arg
                 target_user_name = f"@{arg}"
             else:
-                await message.reply(f"<i>Пользователь {arg} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Пользователь {0} не найден в базе бота!</i>', (_fmt(arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_user_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
+        target_user_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')
         target_username = message.from_user.username
 
     u_data = get_user(target_user_id)
@@ -15341,56 +14852,54 @@ async def cmd_get(message: types.Message):
             if first_game and first_game[0]:
                 reg_date = first_game[0]
             else:
-                reg_date = "Неизвестно"
+                reg_date = _l('Неизвестно')
         except Exception:
-            reg_date = "Неизвестно"
+            reg_date = _l('Неизвестно')
 
     ban_info = check_user_ban(target_user_id)
     if ban_info:
-        ban_status = f'🚫 <b>Заблокирован</b>\n<blockquote>Причина: {ban_info["reason"]}\nСрок: {ban_info["until_str"]}</blockquote>'
+        ban_status = _lf('🚫 <b>Заблокирован</b>\n<blockquote>Причина: {0}\nСрок: {1}</blockquote>', (_fmt(ban_info['reason'], '', -1), _fmt(_l('Навсегда') if ban_info.get('is_perm') else ban_info['until_str'], '', -1)))
     else:
-        ban_status = '✅ <b>Активен (не заблокирован)</b>'
+        ban_status = _l('✅ <b>Активен (не заблокирован)</b>')
 
-    top_ban_status = '🚫 <b>Заблокирован в топе</b>' if is_top_banned(target_user_id) else '✅ <b>В топе доступен</b>'
-    tr_ban_status = '🚫 <b>Переводы заблокированы</b>' if is_transfer_banned(target_user_id) else '✅ <b>Переводы доступны</b>'
+    top_ban_status = _l('🚫 <b>Заблокирован в топе</b>') if is_top_banned(target_user_id) else _l('✅ <b>В топе доступен</b>')
+    tr_ban_status = _l('🚫 <b>Переводы заблокированы</b>') if is_transfer_banned(target_user_id) else _l('✅ <b>Переводы доступны</b>')
 
     last_game = get_last_game(target_user_id)
     game_names = {
-        "mines": ("💣", "Мины"),
-        "tower": ("🛕", "Башня"),
-        "qwak": ("🐸", "Квак"),
-        "diamonds": ("💠", "Алмазы"),
-        "crash": ("🚀", "Краш"),
-        "slots": ("🎰", "Слоты"),
-        "bowling": ("🎳", "Боулинг"),
-        "dice": ("🎲", "Кубик"),
-        "coin": ("🪙", "Монетка"),
-        "chest": ("🧰", "Сундук"),
-        "fishing": ("🎣", "Рыбалка"),
-        "scratch": ("🎫", "Скретч"),
-        "roulette": ("🎱", "Рулетка"),
-        "darts": ("🎯", "Дартс"),
-        "basketball": ("🏀", "Баскетбол"),
-        "football": ("⚽", "Футбол"),
-        "twentyone": ("🃏", "21 (Очко)")
+        "mines": ("💣", _l('Мины')),
+        "tower": ("🛕", _l('Башня')),
+        "qwak": ("🐸", _l('Квак')),
+        "diamonds": ("💠", _l('Алмазы')),
+        "crash": ("🚀", _l('Краш')),
+        "slots": ("🎰", _l('Слоты')),
+        "bowling": ("🎳", _l('Боулинг')),
+        "dice": ("🎲", _l('Кубик')),
+        "coin": ("🪙", _l('Монетка')),
+        "chest": ("🧰", _l('Сундук')),
+        "fishing": ("🎣", _l('Рыбалка')),
+        "scratch": ("🎫", _l('Скретч')),
+        "roulette": ("🎱", _l('Рулетка')),
+        "darts": ("🎯", _l('Дартс')),
+        "basketball": ("🏀", _l('Баскетбол')),
+        "football": ("⚽", _l('Футбол')),
+        "twentyone": ("🃏", _l('21 (Очко)'))
     }
     if last_game:
         gicon, gname = game_names.get(last_game["game_type"], ("🎮", last_game["game_type"]))
         if last_game["result"] == "win":
-            res_str = f'✅ Выигрыш (<b>+{format_number(last_game["win_amount"])} m¢</b>)'
+            res_str = _lf('✅ Выигрыш (<b>+{0} m¢</b>)', (_fmt(format_number(last_game['win_amount']), '', -1),))
         elif last_game["result"] == "draw":
-            res_str = f'🤝 Ничья (<b>{format_number(last_game["win_amount"])} m¢</b>)'
+            res_str = _lf('🤝 Ничья (<b>{0} m¢</b>)', (_fmt(format_number(last_game['win_amount']), '', -1),))
         elif last_game["result"] == "expired":
-            res_str = '💾 Отменена (таймаут)'
+            res_str = _l('💾 Отменена (таймаут)')
         else:
-            res_str = '❌ Проигрыш'
+            res_str = _l('❌ Проигрыш')
         last_game_str = (
-            f'{gicon} <b>{gname}</b> | <i>{last_game["created_at"]}</i>\n'
-            f'<blockquote>Ставка: <b>{format_number(last_game["bet"])} m¢</b>\n'
-            f'Результат: {res_str}</blockquote>'
+            _lf('{0} <b>{1}</b> | <i>{2}</i>\n<blockquote>Ставка: <b>{3} m¢</b>\nРезультат: {4}</blockquote>', (_fmt(gicon, '', -1), _fmt(gname, '', -1), _fmt(last_game['created_at'], '', -1), _fmt(format_number(last_game['bet']), '', -1), _fmt(res_str, '', -1)))
         )
     else:
-        last_game_str = '<blockquote><i>Нет сыгранных игр</i></blockquote>'
+        last_game_str = _l('<blockquote><i>Нет сыгранных игр</i></blockquote>')
 
     clean_target_name = html.escape(get_user_display_name(target_user_id, target_user_name))
     if target_username:
@@ -15407,33 +14916,18 @@ async def cmd_get(message: types.Message):
     lost_amount = u_data.get("lost", 0) or 0
 
     info_text = (
-        f'<tg-emoji emoji-id="5465665476971471368">👤</tg-emoji> <b>Информация о пользователе:</b>\n'
-        f'<blockquote>Игрок: {user_mention}\n'
-        f'ID: <code>{target_user_id}</code></blockquote>\n'
-        f'<code>·····················</code>\n'
-        f'<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{format_number(balance)} m¢</b>\n'
-        f'💎 <b>MP Баланс:</b> <b>{format_number(mp_balance)} MP</b> (Лимит: {format_number(mp_limit)}/д.)\n'
-        f'📅 <b>Регистрация:</b> <i>{reg_date}</i>\n'
-        f'👑 <b>Рекорды:</b>\n'
-        f'<blockquote>• Макс. баланс: <b>{format_number(max_bal)} m¢</b>\n'
-        f'• Сыграно игр: <b>{format_number(games_count)}</b>\n'
-        f'• Проиграно: <b>{format_number(lost_amount)} m¢</b></blockquote>\n'
-        f'🛡 <b>Статус бана:</b> {ban_status}\n'
-        f'🏆 <b>Статус топа:</b> {top_ban_status}\n'
-        f'💳 <b>Статус переводов:</b> {tr_ban_status}\n'
-        f'<code>·····················</code>\n'
-        f'🕹 <b>Последняя игра:</b>\n{last_game_str}'
+        _lf('<tg-emoji emoji-id="5465665476971471368">👤</tg-emoji> <b>Информация о пользователе:</b>\n<blockquote>Игрок: {0}\nID: <code>{1}</code></blockquote>\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{2} m¢</b>\n💎 <b>MP Баланс:</b> <b>{3} MP</b> (Лимит: {4}/д.)\n📅 <b>Регистрация:</b> <i>{5}</i>\n👑 <b>Рекорды:</b>\n<blockquote>• Макс. баланс: <b>{6} m¢</b>\n• Сыграно игр: <b>{7}</b>\n• Проиграно: <b>{8} m¢</b></blockquote>\n🛡 <b>Статус бана:</b> {9}\n🏆 <b>Статус топа:</b> {10}\n💳 <b>Статус переводов:</b> {11}\n<code>·····················</code>\n🕹 <b>Последняя игра:</b>\n{12}', (_fmt(user_mention, '', -1), _fmt(target_user_id, '', -1), _fmt(format_number(balance), '', -1), _fmt(format_number(mp_balance), '', -1), _fmt(format_number(mp_limit), '', -1), _fmt(reg_date, '', -1), _fmt(format_number(max_bal), '', -1), _fmt(format_number(games_count), '', -1), _fmt(format_number(lost_amount), '', -1), _fmt(ban_status, '', -1), _fmt(top_ban_status, '', -1), _fmt(tr_ban_status, '', -1), _fmt(last_game_str, '', -1)))
     )
 
     get_keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🗑 Сбросить рекорды",
+                    text=_l('🗑 Сбросить рекорды'),
                     callback_data=f"adm_reset_rec_{target_user_id}"
                 ),
                 InlineKeyboardButton(
-                    text="📜 История переводов",
+                    text=_l('📜 История переводов'),
                     callback_data=f"thist_{target_user_id}_1"
                 )
             ]
@@ -15444,28 +14938,26 @@ async def cmd_get(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("adm_reset_rec_")))
+@_localized
 async def process_adm_reset_rec(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
-        await callback.answer("У вас нет прав администратора!", show_alert=True)
+        await callback.answer(_l('У вас нет прав администратора!'), show_alert=True)
         return
 
     try:
         target_user_id = int(callback.data.split("_")[-1])
     except Exception:
-        await callback.answer("Ошибка пользователя!", show_alert=True)
+        await callback.answer(_l('Ошибка пользователя!'), show_alert=True)
         return
 
     u_data = get_user(target_user_id)
     cur_bal = u_data.get("balance", 0)
     update_user(target_user_id, max_balance=cur_bal, games=0, lost=0)
-    await callback.answer("✅ Рекорды пользователя успешно сброшены!", show_alert=True)
+    await callback.answer(_l('✅ Рекорды пользователя успешно сброшены!'), show_alert=True)
     target_name = get_user_display_name(target_user_id)
     try:
         await callback.message.reply(
-            f"<i>✅ Рекорды пользователя <b>{html.escape(get_user_display_name(target_user_id, target_name))}</b> (<code>{target_user_id}</code>) сброшены!\n"
-            f"• Макс. баланс: {format_number(cur_bal)} m¢\n"
-            f"• Сыграно игр: 0\n"
-            f"• Проиграно: 0 m¢</i>",
+            _lf('<i>✅ Рекорды пользователя <b>{0}</b> (<code>{1}</code>) сброшены!\n• Макс. баланс: {2} m¢\n• Сыграно игр: 0\n• Проиграно: 0 m¢</i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name)), '', -1), _fmt(target_user_id, '', -1), _fmt(format_number(cur_bal), '', -1))),
             parse_mode=ParseMode.HTML
         )
     except Exception:
@@ -15473,6 +14965,7 @@ async def process_adm_reset_rec(callback: types.CallbackQuery):
 
 
 
+@_localized
 def build_thistory_message(target_user_id, target_name, page=1):
     total_count = get_user_transfers_count(target_user_id)
     per_page = 5
@@ -15488,34 +14981,29 @@ def build_thistory_message(target_user_id, target_name, page=1):
     clean_target_name = html.escape(get_user_display_name(target_user_id, target_name))
     target_link = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a>'
     text = (
-        f'💳 <b>История переводов:</b> {target_link} (<code>{target_user_id}</code>)\n'
-        f'<code>·····················</code>\n'
+        _lf('💳 <b>История переводов:</b> {0} (<code>{1}</code>)\n<code>·····················</code>\n', (_fmt(target_link, '', -1), _fmt(target_user_id, '', -1)))
     )
 
     if not rows:
-        text += "<i>Переводов не найдено.</i>\n"
+        text += _l('<i>Переводов не найдено.</i>\n')
     else:
         for idx, (tid, sender_id, receiver_id, amount, commission, dt_str) in enumerate(rows):
             if sender_id == target_user_id:
                 other_name = html.escape(get_user_display_name(receiver_id))
                 other_link = f'<a href="tg://user?id={receiver_id}">{other_name}</a>'
                 text += (
-                    f'📤 <b>Перевод игроку:</b> {other_link}\n'
-                    f'<blockquote>💰 Сумма: <b>{format_number(amount)} m¢</b> (ком.: {format_number(commission)} m¢)\n'
-                    f'📅 Дата: <i>{dt_str}</i></blockquote>\n'
+                    _lf('📤 <b>Перевод игроку:</b> {0}\n<blockquote>💰 Сумма: <b>{1} m¢</b> (ком.: {2} m¢)\n📅 Дата: <i>{3}</i></blockquote>\n', (_fmt(other_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(commission), '', -1), _fmt(dt_str, '', -1)))
                 )
             else:
                 other_name = html.escape(get_user_display_name(sender_id))
                 other_link = f'<a href="tg://user?id={sender_id}">{other_name}</a>'
                 text += (
-                    f'📥 <b>Получено от:</b> {other_link}\n'
-                    f'<blockquote>💰 Сумма: <b>{format_number(amount)} m¢</b>\n'
-                    f'📅 Дата: <i>{dt_str}</i></blockquote>\n'
+                    _lf('📥 <b>Получено от:</b> {0}\n<blockquote>💰 Сумма: <b>{1} m¢</b>\n📅 Дата: <i>{2}</i></blockquote>\n', (_fmt(other_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(dt_str, '', -1)))
                 )
             if idx < len(rows) - 1:
                 text += '<code>·····················</code>\n'
 
-        text += f'\n↗️ <i>Страница {page}/{total_pages} (Всего: {total_count})</i>'
+        text += _lf('\n↗️ <i>Страница {0}/{1} (Всего: {2})</i>', (_fmt(page, '', -1), _fmt(total_pages, '', -1), _fmt(total_count, '', -1)))
 
     nav_buttons = []
     if page > 1:
@@ -15532,10 +15020,11 @@ def build_thistory_message(target_user_id, target_name, page=1):
 
 
 @dp.message(Command("thistory", "th", "история_переводов"))
+@_localized
 async def cmd_thistory(message: types.Message):
     user_id = message.from_user.id
     if user_id not in ADMINS:
-        await message.answer("<i>У вас нет прав для этой команды!</i>", parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>У вас нет прав для этой команды!</i>'), parse_mode=ParseMode.HTML)
         return
 
     args = message.text.split()[1:]
@@ -15545,14 +15034,14 @@ async def cmd_thistory(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or _l('Пользователь')
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
             uname = target_arg.lstrip("@")
             found = get_user_by_username(uname)
             if not found:
-                await message.answer(f"<i>Пользователь @{uname} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь @{0} не найден в базе бота!</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             target_user_id = found["user_id"]
             target_name = f"@{uname}"
@@ -15565,20 +15054,21 @@ async def cmd_thistory(message: types.Message):
                 target_user_id = found["user_id"]
                 target_name = f"@{target_arg}"
             else:
-                await message.answer(f"<i>Пользователь {target_arg} не найден!</i>", parse_mode=ParseMode.HTML)
+                await message.answer(_lf('<i>Пользователь {0} не найден!</i>', (_fmt(target_arg, '', -1),)), parse_mode=ParseMode.HTML)
                 return
     else:
         target_user_id = user_id
-        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
     text, keyboard = build_thistory_message(target_user_id, target_name, page=1)
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("thist_")))
+@_localized
 async def process_thistory_page(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
-        await callback.answer("У вас нет прав администратора!", show_alert=True)
+        await callback.answer(_l('У вас нет прав администратора!'), show_alert=True)
         return
 
     await callback.answer()
@@ -15598,50 +15088,39 @@ async def process_thistory_page(callback: types.CallbackQuery):
 
 
 
+@_localized
 def get_day_declension(days: int) -> str:
     if 11 <= days % 100 <= 19:
-        return "дней"
+        return _l('дней')
     last_digit = days % 10
     if last_digit == 1:
-        return "день"
+        return _l('день')
     elif 2 <= last_digit <= 4:
-        return "дня"
+        return _l('дня')
     else:
-        return "дней"
+        return _l('дней')
 
 
+@_localized
 def build_deposit_main_menu(user_id, user_name):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ БАНК</b>\n'
-        '<code>·····················</code>\n'
-        '<tg-emoji emoji-id="5390875094027344872">💲</tg-emoji> <b>Временные депозиты:</b>\n'
-        '<blockquote>├ 1 день — 0,4%\n'
-        '├ 3 дня — 1,5% (0,5%/день)\n'
-        '├ 7 дней — 4% (0,57%/день)\n'
-        '├ 15 дней — 10% (0,66%/день)\n'
-        '├ 30 дней — 25% (0,83%/день) <tg-emoji emoji-id="5420315771991497307">🔥</tg-emoji>\n'
-        '└ 60 дней — 65% (1,08%/день) <tg-emoji emoji-id="5274225173837394638">👑</tg-emoji> </blockquote>\n'
-        '<b> <tg-emoji emoji-id="5296355151743838259">🪙</tg-emoji> Накопительный счет</b>\n'
-        '<blockquote>└ 0.2%/день, вывод в любой момент</blockquote>\n'
-        '<code>·····················</code>\n'
-        'Куда хочешь <b>вложиться? 👇</b>'
+        _lf('{0}\n<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ БАНК</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5390875094027344872">💲</tg-emoji> <b>Временные депозиты:</b>\n<blockquote>├ 1 день — 0,4%\n├ 3 дня — 1,5% (0,5%/день)\n├ 7 дней — 4% (0,57%/день)\n├ 15 дней — 10% (0,66%/день)\n├ 30 дней — 25% (0,83%/день) <tg-emoji emoji-id="5420315771991497307">🔥</tg-emoji>\n└ 60 дней — 65% (1,08%/день) <tg-emoji emoji-id="5274225173837394638">👑</tg-emoji> </blockquote>\n<b> <tg-emoji emoji-id="5296355151743838259">🪙</tg-emoji> Накопительный счет</b>\n<blockquote>└ 0.2%/день, вывод в любой момент</blockquote>\n<code>·····················</code>\nКуда хочешь <b>вложиться? 👇</b>', (_fmt(user_link, '', -1),))
     )
 
     keyboard_rows = [
         [
             InlineKeyboardButton(
-                text="Временные депозиты",
+                text=_l('Временные депозиты'),
                 callback_data="dep_time",
                 style="primary",
                 icon_custom_emoji_id="5390875094027344872"
             ),
             InlineKeyboardButton(
-                text="Накопительный счет",
+                text=_l('Накопительный счет'),
                 callback_data="dep_savings",
                 style="success",
                 icon_custom_emoji_id="5296355151743838259"
@@ -15653,7 +15132,7 @@ def build_deposit_main_menu(user_id, user_name):
     if total_deps > 0:
         keyboard_rows.append([
             InlineKeyboardButton(
-                text="Мои депозиты",
+                text=_l('Мои депозиты'),
                 callback_data="dep_my",
                 style="primary"
             )
@@ -15664,6 +15143,7 @@ def build_deposit_main_menu(user_id, user_name):
 
 @dp.message(Command("deposit", "депозит", "банк", "депозиты"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"]))
+@_localized
 async def cmd_deposit(message: types.Message):
     user_id = message.from_user.id
     user_name = get_user_display_name(message.from_user.id, message.from_user.first_name)
@@ -15672,6 +15152,7 @@ async def cmd_deposit(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_main"))
+@_localized
 async def process_dep_main(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_deposit_main_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15681,33 +15162,30 @@ async def process_dep_main(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 def build_time_deposits_menu(user_id, user_name):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     text = (
-        f'{user_link}\n'
-        '<tg-emoji emoji-id="5390875094027344872">💲</tg-emoji> <b>ВРЕМЕННЫЕ ДЕПОЗИТЫ</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote>ℹ️ Здесь вы можете вложить свои mCoin под проценты на фиксированный срок. При досрочном снятии возвращается только сумма без процентов.</blockquote>\n'
-        'Выбери <b>срок депозита 👇</b>'
+        _lf('{0}\n<tg-emoji emoji-id="5390875094027344872">💲</tg-emoji> <b>ВРЕМЕННЫЕ ДЕПОЗИТЫ</b>\n<code>·····················</code>\n<blockquote>ℹ️ Здесь вы можете вложить свои mCoin под проценты на фиксированный срок. При досрочном снятии возвращается только сумма без процентов.</blockquote>\nВыбери <b>срок депозита 👇</b>', (_fmt(user_link, '', -1),))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="1д.", callback_data="dep_term_1_0", style="primary"),
-                InlineKeyboardButton(text="3д.", callback_data="dep_term_3_0", style="primary"),
-                InlineKeyboardButton(text="7д.", callback_data="dep_term_7_0", style="primary")
+                InlineKeyboardButton(text=_l('1д.'), callback_data="dep_term_1_0", style="primary"),
+                InlineKeyboardButton(text=_l('3д.'), callback_data="dep_term_3_0", style="primary"),
+                InlineKeyboardButton(text=_l('7д.'), callback_data="dep_term_7_0", style="primary")
             ],
             [
-                InlineKeyboardButton(text="15д.", callback_data="dep_term_15_0", style="primary"),
-                InlineKeyboardButton(text="30д.", callback_data="dep_term_30_0", style="primary"),
-                InlineKeyboardButton(text="60д.", callback_data="dep_term_60_0", style="primary")
+                InlineKeyboardButton(text=_l('15д.'), callback_data="dep_term_15_0", style="primary"),
+                InlineKeyboardButton(text=_l('30д.'), callback_data="dep_term_30_0", style="primary"),
+                InlineKeyboardButton(text=_l('60д.'), callback_data="dep_term_60_0", style="primary")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="dep_main", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="dep_main", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -15715,6 +15193,7 @@ def build_time_deposits_menu(user_id, user_name):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_time"))
+@_localized
 async def process_dep_time(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_time_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15724,21 +15203,17 @@ async def process_dep_time(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int = 0):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     user_data = get_user(user_id)
     balance = user_data.get("balance", 0)
 
     decl = get_day_declension(days).upper()
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ НА {days} {decl}</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote>ℹ️ Чтобы внести другое количество mCoin, ответьте на это сообщение, указав нужное число.</blockquote>\n'
-        '<blockquote> <tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Лимит банка: 100kk mCoin.</blockquote>\n'
-        '<tg-emoji emoji-id="5465347885614788367">💴</tg-emoji> Сколько <b>хочешь внести?</b>'
+        _lf('{0}\n<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ НА {1} {2}</b>\n<code>·····················</code>\n<blockquote>ℹ️ Чтобы внести другое количество mCoin, ответьте на это сообщение, указав нужное число.</blockquote>\n<blockquote> <tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Лимит банка: 100kk mCoin.</blockquote>\n<tg-emoji emoji-id="5465347885614788367">💴</tg-emoji> Сколько <b>хочешь внести?</b>', (_fmt(user_link, '', -1), _fmt(days, '', -1), _fmt(decl, '', -1)))
     )
 
     b10 = max(1, int(balance * 0.10)) if balance > 0 else 0
@@ -15751,7 +15226,7 @@ def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text=f"Все • {format_number(balance)} m¢", callback_data=f"dep_make_{days}_{is_locked}_all")
+                InlineKeyboardButton(text=_lf('Все • {0} m¢', (_fmt(format_number(balance), '', -1),)), callback_data=f"dep_make_{days}_{is_locked}_all")
             ],
             [
                 InlineKeyboardButton(text=f"{format_number(b10)} m¢", callback_data=f"dep_make_{days}_{is_locked}_10"),
@@ -15759,10 +15234,10 @@ def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int 
                 InlineKeyboardButton(text=f"{format_number(b50)} m¢", callback_data=f"dep_make_{days}_{is_locked}_50")
             ],
             [
-                InlineKeyboardButton(text=f"Заблокировать снятие {lock_icon}", callback_data=f"dep_term_{days}_{next_lock}")
+                InlineKeyboardButton(text=_lf('Заблокировать снятие {0}', (_fmt(lock_icon, '', -1),)), callback_data=f"dep_term_{days}_{next_lock}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="dep_time", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="dep_time", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -15770,6 +15245,7 @@ def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_term_")))
+@_localized
 async def process_dep_term(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.split("_")
@@ -15783,6 +15259,7 @@ async def process_dep_term(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_make_")))
+@_localized
 async def process_dep_make(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     days = int(parts[2])
@@ -15808,34 +15285,28 @@ async def process_dep_make(callback: types.CallbackQuery):
             amount = balance
 
     if amount <= 0:
-        await callback.answer("У вас нет средств для внесения депозита!", show_alert=True)
+        await callback.answer(_l('У вас нет средств для внесения депозита!'), show_alert=True)
         return
 
     ok, res = create_time_deposit(user_id, amount, days, is_locked)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
-    await callback.answer("Депозит успешно открыт!")
-    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
+    await callback.answer(_l('Депозит успешно открыт!'))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     end_str = res["end_at"]
     rate_str = str(res["percent"]).replace(".", ",")
     text = (
-        f'{user_link}\n'
-        '<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ ПРИНЯТ</b>\n'
-        '<code>·····················</code>\n'
-        f'💰 Сумма: <b>{format_number(amount)} m¢</b>\n'
-        f'🔘 Процент: <b>{rate_str}% • {format_number(res["profit"])} m¢</b>\n'
-        '<code>············</code>\n'
-        f'⏳ До: <b>{end_str} ({days}д.)</b>'
+        _lf('{0}\n<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ ПРИНЯТ</b>\n<code>·····················</code>\n💰 Сумма: <b>{1} m¢</b>\n🔘 Процент: <b>{2}% • {3} m¢</b>\n<code>············</code>\n⏳ До: <b>{4} ({5}д.)</b>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(rate_str, '', -1), _fmt(format_number(res['profit']), '', -1), _fmt(end_str, '', -1), _fmt(days, '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Положить ещё", callback_data="dep_main", style="primary")
+                InlineKeyboardButton(text=_l('Положить ещё'), callback_data="dep_main", style="primary")
             ]
         ]
     )
@@ -15846,9 +15317,10 @@ async def process_dep_make(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 def build_my_deposits_menu(user_id, user_name):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     active_deps = get_active_time_deposits(user_id)
@@ -15858,10 +15330,7 @@ def build_my_deposits_menu(user_id, user_name):
     active_count = len(active_deps)
 
     text = (
-        f'{user_link}\n'
-        f'🏦 <b>МОИ ДЕПОЗИТЫ • {active_count}</b>\n'
-        '<code>·····················</code>\n'
-        '❇️ <b>Активные:</b>\n'
+        _lf('{0}\n🏦 <b>МОИ ДЕПОЗИТЫ • {1}</b>\n<code>·····················</code>\n❇️ <b>Активные:</b>\n', (_fmt(user_link, '', -1), _fmt(active_count, '', -1)))
     )
 
     if active_deps:
@@ -15869,15 +15338,14 @@ def build_my_deposits_menu(user_id, user_name):
             dep_id, amount, days, percent, profit, is_locked, c_at, end_at, c_dt, e_dt = dep
             p_str = str(percent).replace(".", ",")
             lock_badge = " 🔒" if is_locked else ""
-            text += f'До {end_at} • {format_number(amount)} m¢ ({p_str}%){lock_badge}\n'
+            text += _lf('До {0} • {1} m¢ ({2}%){3}\n', (_fmt(end_at, '', -1), _fmt(format_number(amount), '', -1), _fmt(p_str, '', -1), _fmt(lock_badge, '', -1)))
         if len(active_deps) > 3:
-            text += f'<i>...и ещё {len(active_deps) - 3} активных вкладов</i>\n'
+            text += _lf('<i>...и ещё {0} активных вкладов</i>\n', (_fmt(len(active_deps) - 3, '', -1),))
     else:
-        text += '<i>Нет активных депозитов</i>\n'
+        text += _l('<i>Нет активных депозитов</i>\n')
 
     text += (
-        '\n<code>············</code>\n'
-        f'<blockquote>💰 Заработано: <b>{format_number(total_earned)} m¢</b></blockquote>'
+        _lf('\n<code>············</code>\n<blockquote>💰 Заработано: <b>{0} m¢</b></blockquote>', (_fmt(format_number(total_earned), '', -1),))
     )
 
     notif_icon = "✅" if notif_enabled else "❌"
@@ -15885,17 +15353,17 @@ def build_my_deposits_menu(user_id, user_name):
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="❇️ Все активные депозиты", callback_data="dep_active_all_1", style="success")
+                InlineKeyboardButton(text=_l('❇️ Все активные депозиты'), callback_data="dep_active_all_1", style="success")
             ],
             [
-                InlineKeyboardButton(text="Снять ⤵️", callback_data="dep_withdraw_menu_1", style="primary"),
-                InlineKeyboardButton(text="История 🕐", callback_data="dep_history_1", style="primary")
+                InlineKeyboardButton(text=_l('Снять ⤵️'), callback_data="dep_withdraw_menu_1", style="primary"),
+                InlineKeyboardButton(text=_l('История 🕐'), callback_data="dep_history_1", style="primary")
             ],
             [
-                InlineKeyboardButton(text=f"Уведомления от банка {notif_icon}", callback_data="dep_notif_toggle")
+                InlineKeyboardButton(text=_lf('Уведомления от банка {0}', (_fmt(notif_icon, '', -1),)), callback_data="dep_notif_toggle")
             ],
             [
-                InlineKeyboardButton(text="Положить ещё", callback_data="dep_main", style="primary")
+                InlineKeyboardButton(text=_l('Положить ещё'), callback_data="dep_main", style="primary")
             ]
         ]
     )
@@ -15903,6 +15371,7 @@ def build_my_deposits_menu(user_id, user_name):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_my"))
+@_localized
 async def process_dep_my(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_my_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -15913,9 +15382,10 @@ async def process_dep_my(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_notif_toggle"))
+@_localized
 async def process_dep_notif_toggle(callback: types.CallbackQuery):
     toggle_bank_notifications(callback.from_user.id)
-    await callback.answer("Настройки уведомлений обновлены!")
+    await callback.answer(_l('Настройки уведомлений обновлены!'))
     text, keyboard = build_my_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -15923,9 +15393,10 @@ async def process_dep_notif_toggle(callback: types.CallbackQuery):
         pass
 
 
+@_localized
 def build_active_deposits_menu(user_id, user_name, page=1):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     active_deps = get_active_time_deposits(user_id)
@@ -15941,23 +15412,20 @@ def build_active_deposits_menu(user_id, user_name, page=1):
     page_items = active_deps[start_idx:start_idx + per_page]
 
     text = (
-        f'{user_link}\n'
-        '❇️ <b>АКТИВНЫЕ ДЕПОЗИТЫ</b>\n'
-        '<code>·····················</code>\n'
+        _lf('{0}\n❇️ <b>АКТИВНЫЕ ДЕПОЗИТЫ</b>\n<code>·····················</code>\n', (_fmt(user_link, '', -1),))
     )
 
     if not page_items:
-        text += "<i>Нет активных депозитов.</i>\n"
+        text += _l('<i>Нет активных депозитов.</i>\n')
     else:
         for dep in page_items:
             dep_id, amount, days, percent, profit, is_locked, c_at, end_at, c_dt, e_dt = dep
             p_str = str(percent).replace(".", ",")
             lock_badge = " 🔒" if is_locked else ""
-            text += f'До {end_at} • <b>{format_number(amount)} m¢</b> ({p_str}%){lock_badge}\n'
+            text += _lf('До {0} • <b>{1} m¢</b> ({2}%){3}\n', (_fmt(end_at, '', -1), _fmt(format_number(amount), '', -1), _fmt(p_str, '', -1), _fmt(lock_badge, '', -1)))
 
     text += (
-        '<code>············</code>\n'
-        f'↗️ страница {page}/{total_pages}'
+        _lf('<code>············</code>\n↗️ страница {0}/{1}', (_fmt(page, '', -1), _fmt(total_pages, '', -1)))
     )
 
     keyboard_rows = []
@@ -15970,18 +15438,19 @@ def build_active_deposits_menu(user_id, user_name, page=1):
         keyboard_rows.append(nav_buttons)
 
     keyboard_rows.append([
-        InlineKeyboardButton(text="Снять ⤵️", callback_data="dep_withdraw_menu_1", style="primary"),
-        InlineKeyboardButton(text="История 🕐", callback_data="dep_history_1", style="primary")
+        InlineKeyboardButton(text=_l('Снять ⤵️'), callback_data="dep_withdraw_menu_1", style="primary"),
+        InlineKeyboardButton(text=_l('История 🕐'), callback_data="dep_history_1", style="primary")
     ])
     keyboard_rows.append([
-        InlineKeyboardButton(text="Положить ещё", callback_data="dep_main", style="primary"),
-        InlineKeyboardButton(text="Назад", callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
+        InlineKeyboardButton(text=_l('Положить ещё'), callback_data="dep_main", style="primary"),
+        InlineKeyboardButton(text=_l('Назад'), callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
     ])
 
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_active_all_")))
+@_localized
 async def process_dep_active_all(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -15995,9 +15464,10 @@ async def process_dep_active_all(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 def build_withdraw_deposits_menu(user_id, user_name, page=1):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     active_deps = get_active_time_deposits(user_id)
@@ -16015,22 +15485,18 @@ def build_withdraw_deposits_menu(user_id, user_name, page=1):
     page_items = unlocked_deps[start_idx:start_idx + per_page]
 
     text = (
-        f'{user_link}\n'
-        '🏦 <b>СНЯТЬ ДЕПОЗИТ</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote>ℹ️ Депозит снимается автоматически при нажатии на кнопку. Процент, начисленный на депозит, теряется в полном объеме при его снятии.</blockquote>\n'
-        f'↘️ страница {page}/{total_pages}'
+        _lf('{0}\n🏦 <b>СНЯТЬ ДЕПОЗИТ</b>\n<code>·····················</code>\n<blockquote>ℹ️ Депозит снимается автоматически при нажатии на кнопку. Процент, начисленный на депозит, теряется в полном объеме при его снятии.</blockquote>\n↘️ страница {1}/{2}', (_fmt(user_link, '', -1), _fmt(page, '', -1), _fmt(total_pages, '', -1)))
     )
 
     keyboard_rows = []
     if unlocked_deps:
         keyboard_rows.append([
-            InlineKeyboardButton(text="❇️ снять всё", callback_data="dep_wd_all", style="danger")
+            InlineKeyboardButton(text=_l('❇️ снять всё'), callback_data="dep_wd_all", style="danger")
         ])
         for dep in page_items:
             dep_id, amount, days, percent, profit, is_locked, c_at, end_at, c_dt, e_dt = dep
             keyboard_rows.append([
-                InlineKeyboardButton(text=f"до {end_at} — {format_number(amount)}", callback_data=f"dep_wd_one_{dep_id}")
+                InlineKeyboardButton(text=_lf('до {0} — {1}', (_fmt(end_at, '', -1), _fmt(format_number(amount), '', -1))), callback_data=f"dep_wd_one_{dep_id}")
             ])
 
     nav_buttons = []
@@ -16042,13 +15508,14 @@ def build_withdraw_deposits_menu(user_id, user_name, page=1):
         keyboard_rows.append(nav_buttons)
 
     keyboard_rows.append([
-        InlineKeyboardButton(text="Назад", callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
+        InlineKeyboardButton(text=_l('Назад'), callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
     ])
 
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_withdraw_menu_")))
+@_localized
 async def process_dep_withdraw_menu(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -16063,13 +15530,14 @@ async def process_dep_withdraw_menu(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_wd_all"))
+@_localized
 async def process_dep_wd_all(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     ok, res = withdraw_all_time_deposits(user_id)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
-    await callback.answer(f"Снято {format_number(res)} mCoin на баланс!")
+    await callback.answer(_lf('Снято {0} mCoin на баланс!', (_fmt(format_number(res), '', -1),)))
     text, keyboard = build_my_deposits_menu(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -16078,6 +15546,7 @@ async def process_dep_wd_all(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_wd_one_")))
+@_localized
 async def process_dep_wd_one(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -16086,9 +15555,9 @@ async def process_dep_wd_one(callback: types.CallbackQuery):
         return
     ok, res = withdraw_time_deposit(dep_id, user_id)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
-    await callback.answer(f"Депозит на {format_number(res)} mCoin возвращен на баланс!")
+    await callback.answer(_lf('Депозит на {0} mCoin возвращен на баланс!', (_fmt(format_number(res), '', -1),)))
     text, keyboard = build_withdraw_deposits_menu(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=1)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -16096,9 +15565,10 @@ async def process_dep_wd_one(callback: types.CallbackQuery):
         pass
 
 
+@_localized
 def build_deposits_history_menu(user_id, user_name, page=1):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     total_count = get_user_time_deposits_history_count(user_id)
@@ -16113,34 +15583,28 @@ def build_deposits_history_menu(user_id, user_name, page=1):
     rows = get_user_time_deposits_history(user_id, limit=per_page, offset=offset)
 
     text = (
-        f'{user_link}\n'
-        '🕐 <b>ИСТОРИЯ ДЕПОЗИТОВ</b>\n'
-        '<code>·····················</code>\n'
+        _lf('{0}\n🕐 <b>ИСТОРИЯ ДЕПОЗИТОВ</b>\n<code>·····················</code>\n', (_fmt(user_link, '', -1),))
     )
 
     status_names = {
-        "active": "❇️ Активен",
-        "completed": "✅ Завершен",
-        "withdrawn": "⤵️ Снят досрочно"
+        "active": _l('❇️ Активен'),
+        "completed": _l('✅ Завершен'),
+        "withdrawn": _l('⤵️ Снят досрочно')
     }
 
     if not rows:
-        text += "<i>История депозитов пуста.</i>\n"
+        text += _l('<i>История депозитов пуста.</i>\n')
     else:
         for dep in rows:
             dep_id, amount, days, percent, profit, is_locked, status, c_at, end_at = dep
             st_text = status_names.get(status, status)
             p_str = str(percent).replace(".", ",")
             text += (
-                f'🏦 <b>Депозит #{dep_id}</b> ({days}д., {p_str}%)\n'
-                f'<blockquote>💰 Сумма: <b>{format_number(amount)} m¢</b> | Прибыль: <b>+{format_number(profit)} m¢</b>\n'
-                f'📅 Создан: <i>{c_at}</i> | До: <i>{end_at}</i>\n'
-                f'Статус: {st_text}</blockquote>\n'
+                _lf('🏦 <b>Депозит #{0}</b> ({1}д., {2}%)\n<blockquote>💰 Сумма: <b>{3} m¢</b> | Прибыль: <b>+{4} m¢</b>\n📅 Создан: <i>{5}</i> | До: <i>{6}</i>\nСтатус: {7}</blockquote>\n', (_fmt(dep_id, '', -1), _fmt(days, '', -1), _fmt(p_str, '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(profit), '', -1), _fmt(c_at, '', -1), _fmt(end_at, '', -1), _fmt(st_text, '', -1)))
             )
 
     text += (
-        '<code>············</code>\n'
-        f'↗️ страница {page}/{total_pages}'
+        _lf('<code>············</code>\n↗️ страница {0}/{1}', (_fmt(page, '', -1), _fmt(total_pages, '', -1)))
     )
 
     keyboard_rows = []
@@ -16153,13 +15617,14 @@ def build_deposits_history_menu(user_id, user_name, page=1):
         keyboard_rows.append(nav_buttons)
 
     keyboard_rows.append([
-        InlineKeyboardButton(text="Назад", callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
+        InlineKeyboardButton(text=_l('Назад'), callback_data="dep_my", icon_custom_emoji_id="5255703720078879038")
     ])
 
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_history_")))
+@_localized
 async def process_dep_history(callback: types.CallbackQuery):
     await callback.answer()
     try:
@@ -16174,41 +15639,35 @@ async def process_dep_history(callback: types.CallbackQuery):
 
 
 
+@_localized
 def build_savings_menu(user_id, user_name):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     sav = get_savings_account(user_id)
     sav_bal = sav.get("balance", 0)
     accum = int(sav.get("accumulated_interest", 0.0))
 
     text = (
-        f'{user_link}\n'
-        '💸 <b>НАКОПИТЕЛЬНЫЙ СЧЕТ</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote>ℹ️ Здесь вы можете хранить свои mCoin и получать ежедневные проценты. Проценты начисляются каждый час. Снятие доступно в любой момент без потери начисленных процентов.</blockquote>\n'
-        '<blockquote> <tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>  Лимит банка: 100kk mCoin.</blockquote>\n'
-        f'💰 <b>На счету:</b> {format_number(sav_bal)} m¢\n'
-        '🔘 <b>Ставка:</b> 0.2% дневных\n'
-        f'💸 <b>Накоплено:</b> {format_number(accum)} m¢'
+        _lf('{0}\n💸 <b>НАКОПИТЕЛЬНЫЙ СЧЕТ</b>\n<code>·····················</code>\n<blockquote>ℹ️ Здесь вы можете хранить свои mCoin и получать ежедневные проценты. Проценты начисляются каждый час. Снятие доступно в любой момент без потери начисленных процентов.</blockquote>\n<blockquote> <tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji>  Лимит банка: 100kk mCoin.</blockquote>\n💰 <b>На счету:</b> {1} m¢\n🔘 <b>Ставка:</b> 0.2% дневных\n💸 <b>Накоплено:</b> {2} m¢', (_fmt(user_link, '', -1), _fmt(format_number(sav_bal), '', -1), _fmt(format_number(accum), '', -1)))
     )
 
     action_buttons = [
-        InlineKeyboardButton(text="Пополнить", callback_data="dep_sav_dep", style="success")
+        InlineKeyboardButton(text=_l('Пополнить'), callback_data="dep_sav_dep", style="success")
     ]
     if (sav_bal + accum) > 0:
         action_buttons.append(
-            InlineKeyboardButton(text="Снять 💰", callback_data="dep_sav_wd", style="primary")
+            InlineKeyboardButton(text=_l('Снять 💰'), callback_data="dep_sav_wd", style="primary")
         )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             action_buttons,
             [
-                InlineKeyboardButton(text="История пополнений 🕐", callback_data="dep_sav_hist_1", style="primary")
+                InlineKeyboardButton(text=_l('История пополнений 🕐'), callback_data="dep_sav_hist_1", style="primary")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="dep_main", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="dep_main", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -16216,6 +15675,7 @@ def build_savings_menu(user_id, user_name):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_savings"))
+@_localized
 async def process_dep_savings(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_savings_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -16225,29 +15685,27 @@ async def process_dep_savings(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+@_localized
 def build_savings_deposit_input_menu(user_id, user_name):
     user_name = get_user_display_name(user_id, user_name)
-    clean_name = html.escape(str(user_name or "Игрок"))
+    clean_name = html.escape(str(user_name or _l('Игрок')))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     user_data = get_user(user_id)
     balance = user_data.get("balance", 0)
 
     text = (
-        f'{user_link}\n'
-        '💳 <b>ПОПОЛНИТЬ НАКОП. СЧЕТ</b>\n'
-        '<code>·····················</code>\n'
-        f'💰 Доступно: <b>{format_number(balance)} m¢</b>\n'
-        '<i>Напишите в ответ на это сообщение сумму, которую хотите положить на накопительный счет:</i>'
+        _lf('{0}\n💳 <b>ПОПОЛНИТЬ НАКОП. СЧЕТ</b>\n<code>·····················</code>\n💰 Доступно: <b>{1} m¢</b>\n<i>Напишите в ответ на это сообщение сумму, которую хотите положить на накопительный счет:</i>', (_fmt(user_link, '', -1), _fmt(format_number(balance), '', -1)))
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]
         ]
     )
     return text, keyboard
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_sav_dep"))
+@_localized
 async def process_dep_sav_dep(callback: types.CallbackQuery):
     await callback.answer()
     text, keyboard = build_savings_deposit_input_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -16258,24 +15716,21 @@ async def process_dep_sav_dep(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "dep_sav_wd"))
+@_localized
 async def process_dep_sav_wd(callback: types.CallbackQuery):
     await callback.answer()
-    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок')))
     user_link = f'<a href="tg://user?id={callback.from_user.id}">{clean_name}</a>'
     sav = get_savings_account(callback.from_user.id)
     sav_bal = sav.get("balance", 0)
     accum = int(sav.get("accumulated_interest", 0.0))
     total_avail = sav_bal + accum
     text = (
-        f'{user_link}\n'
-        '💸 <b>СНЯТЬ С НАКОП. СЧЕТА</b>\n'
-        '<code>·····················</code>\n'
-        f'💰 Доступно к снятию: <b>{format_number(total_avail)} m¢</b>\n'
-        '<i>Напишите в ответ на это сообщение сумму для снятия:</i>'
+        _lf('{0}\n💸 <b>СНЯТЬ С НАКОП. СЧЕТА</b>\n<code>·····················</code>\n💰 Доступно к снятию: <b>{1} m¢</b>\n<i>Напишите в ответ на это сообщение сумму для снятия:</i>', (_fmt(user_link, '', -1), _fmt(format_number(total_avail), '', -1)))
     )
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Назад", callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]
+            [InlineKeyboardButton(text=_l('Назад'), callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]
         ]
     )
     try:
@@ -16285,6 +15740,7 @@ async def process_dep_sav_wd(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("dep_sav_hist_")))
+@_localized
 async def process_dep_sav_hist(callback: types.CallbackQuery):
     await callback.answer()
     page = 1
@@ -16296,15 +15752,15 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
     history = get_savings_history(uid, limit=5, offset=(page-1)*5)
     total_cnt = get_savings_history_count(uid)
     total_pages = max(1, math.ceil(total_cnt / 5))
-    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок')))
     user_link = f'<a href="tg://user?id={uid}">{clean_name}</a>'
 
-    text = f'{user_link}\n📜 <b>История накопительного счета</b>\n<code>·····················</code>\n'
+    text = _lf('{0}\n📜 <b>История накопительного счета</b>\n<code>·····················</code>\n', (_fmt(user_link, '', -1),))
     if not history:
-        text += '<i>История операций пуста</i>'
+        text += _l('<i>История операций пуста</i>')
     else:
         for op_type, amount, dt in history:
-            op_name = "Пополнение" if op_type == "deposit" else "Снятие"
+            op_name = _l('Пополнение') if op_type == "deposit" else _l('Снятие')
             text += f'├ {op_name}: <b>{format_number(amount)} m¢</b> ({dt})\n'
 
     nav = []
@@ -16315,7 +15771,7 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
         nav.append(InlineKeyboardButton(text="▶️", callback_data=f"dep_sav_hist_{page+1}"))
 
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[nav, [InlineKeyboardButton(text="Назад", callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]]
+        inline_keyboard=[nav, [InlineKeyboardButton(text=_l('Назад'), callback_data="dep_savings", icon_custom_emoji_id="5255703720078879038")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -16324,42 +15780,70 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
 
 
 
+def _reply_callback_data(reply):
+    markup = getattr(reply, "reply_markup", None)
+    rows = getattr(markup, "inline_keyboard", None)
+    if not isinstance(rows, (list, tuple)):
+        return ()
+    return tuple(button.callback_data for row in rows for button in row if isinstance(getattr(button, "callback_data", None), str))
+
+
+def _bank_reply_term(reply):
+    for data in _reply_callback_data(reply):
+        match = re.fullmatch(r"dep_make_(\d+)_(0|1)_(all|10|25|50)", data)
+        if match and int(match[1]) in TIME_DEPOSIT_RATES:
+            return int(match[1]), int(match[2])
+    return None
+
+
+def _p2p_reply_action(reply):
+    buttons = _reply_callback_data(reply)
+    for data in buttons:
+        for prefix, action in (("p2p_bbot_", "buy_bot_custom"), ("p2p_sbot_", "sell_bot_custom"), ("p2p_dmc_", "dep_mcoin"), ("p2p_dmp_", "dep_mpoint"), ("p2p_wmc_", "wth_mcoin"), ("p2p_wmp_", "wth_mpoint")):
+            if data.startswith(prefix) and data[len(prefix):].isdigit():
+                return action
+        match = re.fullmatch(r"p2p_(bamt|sbuy)_(\d+)_(\d+)", data)
+        if match:
+            prefix = "buy_seller_" if match[1] == "bamt" else "sell_buyer_"
+            return prefix + match[2]
+    if buttons == ("p2p_buy_bot",):
+        return "buy_bot_custom"
+    return None
+
+
 @dp.message(_inline_filter(lambda message: message.reply_to_message and message.text and (
-    "ДЕПОЗИТ НА" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-    "ПОПОЛНИТЬ НАКОП. СЧЕТ" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-    "СНЯТЬ С НАКОП. СЧЕТА" in (message.reply_to_message.text or message.reply_to_message.caption or "")
+    _bank_reply_term(message.reply_to_message) is not None or
+    "ДЕПОЗИТ НА" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+    "ПОПОЛНИТЬ НАКОП. СЧЕТ" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+    "СНЯТЬ С НАКОП. СЧЕТА" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "")
 )))
+@_localized
 async def process_bank_reply_message(message: types.Message):
-    rep_text = message.reply_to_message.text or message.reply_to_message.caption or ""
+    rep_text = _canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or ""
     user_id = message.from_user.id
     raw_amount = resolve_bet_amount(message.text.strip(), get_user(user_id)["balance"])
+    term = _bank_reply_term(message.reply_to_message)
 
     if raw_amount is None or raw_amount <= 0:
         return
 
-    if "ДЕПОЗИТ НА" in rep_text:
+    if term is not None or "ДЕПОЗИТ НА" in rep_text:
         m = re.search(r'ДЕПОЗИТ НА (\d+)', rep_text)
-        if m:
-            days = int(m.group(1))
-            is_locked = 1 if "Заблокировать снятие ✅" in str(message.reply_to_message.reply_markup) else 0
+        if term is not None or m:
+            days = term[0] if term is not None else int(m.group(1))
+            is_locked = term[1] if term is not None else (1 if "Заблокировать снятие ✅" in _canonical_prompt(str(message.reply_to_message.reply_markup)) else 0)
             ok, res = create_time_deposit(user_id, raw_amount, days, is_locked)
             if not ok:
-                await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
                 return
-            clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
+            clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')))
             user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
             rate_str = str(res["percent"]).replace(".", ",")
             succ_text = (
-                f'{user_link}\n'
-                '<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ ПРИНЯТ</b>\n'
-                '<code>·····················</code>\n'
-                f'💰 Сумма: <b>{format_number(raw_amount)} m¢</b>\n'
-                f'🔘 Процент: <b>{rate_str}% • {format_number(res["profit"])} m¢</b>\n'
-                '<code>············</code>\n'
-                f'⏳ До: <b>{res["end_at"]} ({days}д.)</b>'
+                _lf('{0}\n<tg-emoji emoji-id="5264895611517300926">🏦</tg-emoji><b>ДЕПОЗИТ ПРИНЯТ</b>\n<code>·····················</code>\n💰 Сумма: <b>{1} m¢</b>\n🔘 Процент: <b>{2}% • {3} m¢</b>\n<code>············</code>\n⏳ До: <b>{4} ({5}д.)</b>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(rate_str, '', -1), _fmt(format_number(res['profit']), '', -1), _fmt(res['end_at'], '', -1), _fmt(days, '', -1)))
             )
             keyboard = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Положить ещё", callback_data="dep_main", style="primary")]]
+                inline_keyboard=[[InlineKeyboardButton(text=_l('Положить ещё'), callback_data="dep_main", style="primary")]]
             )
             await message.reply(succ_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             return
@@ -16367,21 +15851,15 @@ async def process_bank_reply_message(message: types.Message):
     if "ПОПОЛНИТЬ НАКОП. СЧЕТ" in rep_text:
         ok, res = deposit_to_savings(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
-        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
+        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')))
         user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
         succ_text = (
-            f'{user_link}\n'
-            '💸 <b>НАКОП. СЧЕТ ПОПОЛНЕН</b>\n'
-            '<code>·····················</code>\n'
-            f'💰 Сумма: <b>{format_number(raw_amount)} m¢</b>\n'
-            '🔘 Ставка: 0.2% дневных\n'
-            '<code>············</code>\n'
-            f'<blockquote>🏦 На счету: <b>{format_number(res)} m¢</b></blockquote>'
+            _lf('{0}\n💸 <b>НАКОП. СЧЕТ ПОПОЛНЕН</b>\n<code>·····················</code>\n💰 Сумма: <b>{1} m¢</b>\n🔘 Ставка: 0.2% дневных\n<code>············</code>\n<blockquote>🏦 На счету: <b>{2} m¢</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(res), '', -1)))
         )
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Накопительный счет", callback_data="dep_savings", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Накопительный счет'), callback_data="dep_savings", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
@@ -16389,17 +15867,15 @@ async def process_bank_reply_message(message: types.Message):
     if "СНЯТЬ С НАКОП. СЧЕТА" in rep_text:
         ok, res = withdraw_from_savings(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
-        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
+        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')))
         user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
         succ_text = (
-            f'🟢 {user_link}, ты вывел с накопительного счета <b>{format_number(res["withdrawn"])} mCoin!</b>\n'
-            '<code>·····················</code>\n'
-            f'<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{format_number(res["balance"])} mCoin</b>'
+            _lf('🟢 {0}, ты вывел с накопительного счета <b>{1} mCoin!</b>\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{2} mCoin</b>', (_fmt(user_link, '', -1), _fmt(format_number(res['withdrawn']), '', -1), _fmt(format_number(res['balance']), '', -1)))
         )
         keyboard = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Накопительный счет", callback_data="dep_savings", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Накопительный счет'), callback_data="dep_savings", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
@@ -16547,12 +16023,13 @@ def get_p2p_bot_24h_stats():
 
 
 @db_transaction
+@_localized
 def deposit_to_p2p_mcoin(user_id, amount):
     amount = int(amount)
     if amount <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     p2p = get_p2p_account(user_id)
     today_str = get_msk_today_str()
@@ -16563,12 +16040,12 @@ def deposit_to_p2p_mcoin(user_id, amount):
 
     user_data = get_user(user_id)
     if user_data["balance"] < total_deduct:
-        return False, f"Недостаточно mCoin! Нужно {format_number(total_deduct)} mCoin (с учетом комиссии {format_number(fee)} mCoin)."
+        return False, _lf('Недостаточно mCoin! Нужно {0} mCoin (с учетом комиссии {1} mCoin).', (_fmt(format_number(total_deduct), '', -1), _fmt(format_number(fee), '', -1)))
 
     try:
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?", (total_deduct, user_id, total_deduct))
         if cursor.rowcount == 0:
-            return False, "Недостаточно mCoin на основном балансе!"
+            return False, _l('Недостаточно mCoin на основном балансе!')
 
         credited = amount
         cursor.execute("UPDATE p2p_accounts SET mcoin_balance = mcoin_balance + ?, last_deposit_date = ? WHERE user_id = ?", (credited, today_str, user_id))
@@ -16583,26 +16060,27 @@ def deposit_to_p2p_mcoin(user_id, amount):
             "mp_balance": updated_p2p["mp_balance"]
         }
     except Exception as e:
-        return False, f"Ошибка пополнения: {e}"
+        return False, _lf('Ошибка пополнения: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def deposit_to_p2p_mpoint(user_id, amount):
     amount = int(amount)
     if amount <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     get_p2p_account(user_id)
     user_data = get_user(user_id)
     if user_data.get("mp_balance", 0) < amount:
-        return False, f"Недостаточно MPOINT! На балансе: {format_number(user_data.get('mp_balance', 0))} MP."
+        return False, _lf('Недостаточно MPOINT! На балансе: {0} MP.', (_fmt(format_number(user_data.get('mp_balance', 0)), '', -1),))
 
     try:
         cursor.execute("UPDATE users SET mp_balance = mp_balance - ? WHERE user_id = ? AND mp_balance >= ?", (amount, user_id, amount))
         if cursor.rowcount == 0:
-            return False, "Недостаточно MPOINT на основном балансе!"
+            return False, _l('Недостаточно MPOINT на основном балансе!')
 
         cursor.execute("UPDATE p2p_accounts SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
@@ -16614,21 +16092,22 @@ def deposit_to_p2p_mpoint(user_id, amount):
             "mp_balance": updated_p2p["mp_balance"]
         }
     except Exception as e:
-        return False, f"Ошибка пополнения: {e}"
+        return False, _lf('Ошибка пополнения: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def withdraw_from_p2p_mcoin(user_id, amount):
     amount = int(amount)
     if amount <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     try:
         cursor.execute("UPDATE p2p_accounts SET mcoin_balance = mcoin_balance - ? WHERE user_id = ? AND mcoin_balance >= ?", (amount, user_id, amount))
         if cursor.rowcount == 0:
-            return False, "Недостаточно mCoin на балансе обменника!"
+            return False, _l('Недостаточно mCoin на балансе обменника!')
 
         cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         conn.commit()
@@ -16639,21 +16118,22 @@ def withdraw_from_p2p_mcoin(user_id, amount):
             "mcoin_balance": updated_p2p["mcoin_balance"]
         }
     except Exception as e:
-        return False, f"Ошибка вывода: {e}"
+        return False, _lf('Ошибка вывода: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def withdraw_from_p2p_mpoint(user_id, amount):
     amount = int(amount)
     if amount <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     try:
         cursor.execute("UPDATE p2p_accounts SET mp_balance = mp_balance - ? WHERE user_id = ? AND mp_balance >= ?", (amount, user_id, amount))
         if cursor.rowcount == 0:
-            return False, "Недостаточно MPOINT на балансе обменника!"
+            return False, _l('Недостаточно MPOINT на балансе обменника!')
 
         cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount, user_id))
         conn.commit()
@@ -16664,38 +16144,39 @@ def withdraw_from_p2p_mpoint(user_id, amount):
             "mp_balance": updated_p2p["mp_balance"]
         }
     except Exception as e:
-        return False, f"Ошибка вывода: {e}"
+        return False, _lf('Ошибка вывода: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def execute_p2p_buy_deal(buyer_id, seller_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if buyer_id == seller_id:
-        return False, "Нельзя покупать у самого себя!"
+        return False, _l('Нельзя покупать у самого себя!')
     if is_transfer_banned(buyer_id) or is_transfer_banned(seller_id):
-        return False, "Переводы заблокированы!"
+        return False, _l('Переводы заблокированы!')
 
     seller_p2p = get_p2p_account(seller_id)
     if not seller_p2p["sell_order_active"] or seller_p2p["sell_price"] <= 0:
-        return False, "У продавца не активна заявка на продажу!"
+        return False, _l('У продавца не активна заявка на продажу!')
 
     total_cost = amount_mp * seller_p2p["sell_price"]
     buyer_u = get_user(buyer_id)
     if buyer_u["balance"] < total_cost:
-        return False, f"Недостаточно mCoin! Нужно {format_number(total_cost)} m¢."
+        return False, _lf('Недостаточно mCoin! Нужно {0} m¢.', (_fmt(format_number(total_cost), '', -1),))
 
     try:
         cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?", (total_cost, buyer_id, total_cost))
         if cursor.rowcount == 0:
-            return False, "Недостаточно mCoin на балансе!"
+            return False, _l('Недостаточно mCoin на балансе!')
 
         cursor.execute("UPDATE p2p_accounts SET mp_balance = mp_balance - ?, deals_count = deals_count + 1 WHERE user_id = ? AND mp_balance >= ? AND sell_order_active = 1", (amount_mp, seller_id, amount_mp))
         if cursor.rowcount == 0:
             cursor.execute("UPDATE users SET balance = balance + ? WHERE user_id = ?", (total_cost, buyer_id))
             conn.commit()
-            return False, "У продавца изменился баланс или заявка отключена!"
+            return False, _l('У продавца изменился баланс или заявка отключена!')
 
         cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_cost, total_cost, seller_id))
         cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount_mp, buyer_id))
@@ -16717,21 +16198,22 @@ def execute_p2p_buy_deal(buyer_id, seller_id, amount_mp):
             "seller_id": seller_id
         }
     except Exception as e:
-        return False, f"Ошибка проведения сделки: {e}"
+        return False, _lf('Ошибка проведения сделки: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def execute_p2p_buy_from_bot(user_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
     if not settings.get("official_buy_enabled", 1):
-        return False, "Официальная покупка сейчас отключена!"
+        return False, _l('Официальная покупка сейчас отключена!')
 
     rate = settings.get("official_buy_rate", 10000)
     total_mcoin = amount_mp * rate
@@ -16739,7 +16221,7 @@ def execute_p2p_buy_from_bot(user_id, amount_mp):
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         cursor.execute("UPDATE users SET balance = balance - ?, mp_balance = mp_balance + ? WHERE user_id = ? AND balance >= ?", (total_mcoin, amount_mp, user_id, total_mcoin))
         if cursor.rowcount == 0:
-            return False, "Недостаточно mCoin на основном балансе!"
+            return False, _l('Недостаточно mCoin на основном балансе!')
 
         cursor.execute("INSERT INTO p2p_bot_stats (user_id, amount_mp, amount_mcoin, created_at) VALUES (?, ?, ?, ?)", (user_id, amount_mp, total_mcoin, now_str))
         cursor.execute("INSERT INTO p2p_deals_history (buyer_id, seller_id, amount_mp, price_per_mp, total_mcoin, commission, created_at) VALUES (?, 0, ?, ?, ?, 0, ?) RETURNING id", (user_id, amount_mp, rate, total_mcoin, now_str))
@@ -16753,21 +16235,22 @@ def execute_p2p_buy_from_bot(user_id, amount_mp):
             "rate": rate
         }
     except Exception as e:
-        return False, f"Ошибка сделки: {e}"
+        return False, _lf('Ошибка сделки: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def execute_p2p_sell_to_bot(user_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if is_transfer_banned(user_id):
-        return False, "Вам заблокированы переводы!"
+        return False, _l('Вам заблокированы переводы!')
 
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
     if not settings.get("official_sell_enabled", 1):
-        return False, "Официальная продажа сейчас отключена!"
+        return False, _l('Официальная продажа сейчас отключена!')
 
     rate = settings.get("official_sell_rate", 10000)
     total_mcoin = amount_mp * rate
@@ -16775,7 +16258,7 @@ def execute_p2p_sell_to_bot(user_id, amount_mp):
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
         cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, user_id, amount_mp))
         if cursor.rowcount == 0:
-            return False, "Недостаточно MP на балансе!"
+            return False, _l('Недостаточно MP на балансе!')
 
         cursor.execute("INSERT INTO p2p_bot_stats (user_id, amount_mp, amount_mcoin, created_at) VALUES (?, ?, ?, ?)", (user_id, amount_mp, total_mcoin, now_str))
         cursor.execute("INSERT INTO p2p_deals_history (buyer_id, seller_id, amount_mp, price_per_mp, total_mcoin, commission, created_at) VALUES (0, ?, ?, ?, ?, 0, ?) RETURNING id", (user_id, amount_mp, rate, total_mcoin, now_str))
@@ -16789,35 +16272,36 @@ def execute_p2p_sell_to_bot(user_id, amount_mp):
             "rate": rate
         }
     except Exception as e:
-        return False, f"Ошибка сделки: {e}"
+        return False, _lf('Ошибка сделки: {0}', (_fmt(e, '', -1),))
 
 
 @db_transaction
+@_localized
 def execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
-        return False, "Сумма должна быть больше 0!"
+        return False, _l('Сумма должна быть больше 0!')
     if seller_id == buyer_id:
-        return False, "Нельзя совершать сделку с самим собой!"
+        return False, _l('Нельзя совершать сделку с самим собой!')
     if is_transfer_banned(seller_id) or is_transfer_banned(buyer_id):
-        return False, "Переводы заблокированы!"
+        return False, _l('Переводы заблокированы!')
 
     buyer_p2p = get_p2p_account(buyer_id)
     if not buyer_p2p["buy_order_active"] or buyer_p2p["buy_price"] <= 0:
-        return False, "У покупателя не активна заявка на покупку!"
+        return False, _l('У покупателя не активна заявка на покупку!')
 
     total_mcoin = amount_mp * buyer_p2p["buy_price"]
 
     try:
         cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, seller_id, amount_mp))
         if cursor.rowcount == 0:
-            return False, "Недостаточно MP на основном балансе!"
+            return False, _l('Недостаточно MP на основном балансе!')
 
         cursor.execute("UPDATE p2p_accounts SET mcoin_balance = mcoin_balance - ?, deals_count = deals_count + 1 WHERE user_id = ? AND mcoin_balance >= ? AND buy_order_active = 1", (total_mcoin, buyer_id, total_mcoin))
         if cursor.rowcount == 0:
             cursor.execute("UPDATE users SET mp_balance = mp_balance + ?, balance = balance - ? WHERE user_id = ?", (amount_mp, total_mcoin, seller_id))
             conn.commit()
-            return False, "У покупателя изменился баланс или заявка отключена!"
+            return False, _l('У покупателя изменился баланс или заявка отключена!')
 
         cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount_mp, buyer_id))
         cursor.execute("UPDATE p2p_accounts SET deals_count = deals_count + 1 WHERE user_id = ?", (seller_id,))
@@ -16838,17 +16322,18 @@ def execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp):
             "buyer_id": buyer_id
         }
     except Exception as e:
-        return False, f"Ошибка проведения сделки: {e}"
+        return False, _lf('Ошибка проведения сделки: {0}', (_fmt(e, '', -1),))
 
 
 
+@_localized
 async def show_p2p_main(event, user_id=None, first_name=None, edit=False):
     if hasattr(event, "from_user") and event.from_user:
         uid = user_id or event.from_user.id
-        fname = first_name or get_user_display_name(event.from_user.id, event.from_user.first_name) or "Игрок"
+        fname = first_name or get_user_display_name(event.from_user.id, event.from_user.first_name) or _l('Игрок')
     else:
         uid = user_id
-        fname = first_name or "Игрок"
+        fname = first_name or _l('Игрок')
 
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
@@ -16856,20 +16341,16 @@ async def show_p2p_main(event, user_id=None, first_name=None, edit=False):
     sell_rate = settings.get("official_sell_rate", 10000)
 
     text = (
-        '<tg-emoji emoji-id="5402186569006210455">💱</tg-emoji><b>P2P ОБМЕННИК</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote><i>ℹ️ Здесь ты можешь купить и продать MPOINT.</i></blockquote>\n'
-        f'<blockquote><tg-emoji emoji-id="5431577498364158238">📊</tg-emoji> <b>Оф. курс:</b> 1 MP ≈ {format_number(sell_rate)} mCoin</blockquote>\n'
-        f'<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji> {user_link}, что ты хочешь?'
+        _lf('<tg-emoji emoji-id="5402186569006210455">💱</tg-emoji><b>P2P ОБМЕННИК</b>\n<code>·····················</code>\n<blockquote><i>ℹ️ Здесь ты можешь купить и продать MPOINT.</i></blockquote>\n<blockquote><tg-emoji emoji-id="5431577498364158238">📊</tg-emoji> <b>Оф. курс:</b> 1 MP ≈ {0} mCoin</blockquote>\n<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji> {1}, что ты хочешь?', (_fmt(format_number(sell_rate), '', -1), _fmt(user_link, '', -1)))
     )
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="КУПИТЬ", callback_data="p2p_buy_list", style="success", icon_custom_emoji_id="5287231198098117669")
+                InlineKeyboardButton(text=_l('КУПИТЬ'), callback_data="p2p_buy_list", style="success", icon_custom_emoji_id="5287231198098117669")
             ],
             [
-                InlineKeyboardButton(text="ПРОДАТЬ", callback_data="p2p_sell_list", style="primary", icon_custom_emoji_id="5445353829304387411")
+                InlineKeyboardButton(text=_l('ПРОДАТЬ'), callback_data="p2p_sell_list", style="primary", icon_custom_emoji_id="5445353829304387411")
             ],
             [
                 InlineKeyboardButton(text=" ", callback_data="p2p_manage", style="primary", icon_custom_emoji_id="5334882760735598374"),
@@ -16894,6 +16375,7 @@ async def show_p2p_main(event, user_id=None, first_name=None, edit=False):
         await event.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
+@_localized
 def render_p2p_manage(user_id):
     p2p = get_p2p_account(user_id)
 
@@ -16930,46 +16412,27 @@ def render_p2p_manage(user_id):
     buy_total = mcoin_bal if buy_active else 0
 
     text = (
-        '📝 <b>Управление обменом</b>\n'
-        '<code>·····················</code>\n'
-        f'💵 <b>Баланс:</b> {format_number(mcoin_bal)} m¢ | {format_number(mp_bal)} MP\n'
-        '<blockquote><i>ℹ️ Основной и обменный балансы не связаны. Используйте кнопки ниже для пополнения и вывода.</i></blockquote>\n'
-        '<b>💰 Заявка на продажу:</b>\n'
-        f'├ <b>Курс:</b> 1 MP = {format_number(sell_price)} m¢ {sell_status}\n'
-        '├ <b>Налог:</b> 0 m¢ (за 1 ед.)\n'
-        f'├ <b>В продаже:</b> {format_number(sell_amount)} MP\n'
-        f'└ <b>Получите:</b> {format_number(sell_total)} m¢\n\n'
-        '💳 <b>Заявка на покупку:</b>\n'
-        f'├ <b>Курс:</b> {format_number(buy_price)} m¢ = 1 MP {buy_status}\n'
-        '├ <b>Сбор:</b> 0 m¢ (за 1 ед.)\n'
-        f'├ <b>Будет куплено:</b> {format_number(buy_amount)} MP\n'
-        f'└ <b>На сумму:</b> {format_number(buy_total)} m¢\n\n'
-        '<blockquote><b>Статусы ордеров:</b>\n'
-        '<i>✅ — Активен\n'
-        '⭕️ — Отключён\n'
-        '❗️ — Недостаточно средств\n'
-        '⚠️ — Курс не установлен</i></blockquote>\n'
-        f'💞 Рейтинг: {p2p["rating"]}'
+        _lf('📝 <b>Управление обменом</b>\n<code>·····················</code>\n💵 <b>Баланс:</b> {0} m¢ | {1} MP\n<blockquote><i>ℹ️ Основной и обменный балансы не связаны. Используйте кнопки ниже для пополнения и вывода.</i></blockquote>\n<b>💰 Заявка на продажу:</b>\n├ <b>Курс:</b> 1 MP = {2} m¢ {3}\n├ <b>Налог:</b> 0 m¢ (за 1 ед.)\n├ <b>В продаже:</b> {4} MP\n└ <b>Получите:</b> {5} m¢\n\n💳 <b>Заявка на покупку:</b>\n├ <b>Курс:</b> {6} m¢ = 1 MP {7}\n├ <b>Сбор:</b> 0 m¢ (за 1 ед.)\n├ <b>Будет куплено:</b> {8} MP\n└ <b>На сумму:</b> {9} m¢\n\n<blockquote><b>Статусы ордеров:</b>\n<i>✅ — Активен\n⭕️ — Отключён\n❗️ — Недостаточно средств\n⚠️ — Курс не установлен</i></blockquote>\n💞 Рейтинг: {10}', (_fmt(format_number(mcoin_bal), '', -1), _fmt(format_number(mp_bal), '', -1), _fmt(format_number(sell_price), '', -1), _fmt(sell_status, '', -1), _fmt(format_number(sell_amount), '', -1), _fmt(format_number(sell_total), '', -1), _fmt(format_number(buy_price), '', -1), _fmt(buy_status, '', -1), _fmt(format_number(buy_amount), '', -1), _fmt(format_number(buy_total), '', -1), _fmt(p2p['rating'], '', -1)))
     )
 
-    sell_btn_text = "🟢 Продажа" if sell_active else "🔴 Продажа"
-    buy_btn_text = "🟢 Покупка" if buy_active else "🔴 Покупка"
+    sell_btn_text = _l('🟢 Продажа') if sell_active else _l('🔴 Продажа')
+    buy_btn_text = _l('🟢 Покупка') if buy_active else _l('🔴 Покупка')
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="Изменить курс продажи", callback_data="p2p_set_sell_price")],
-            [InlineKeyboardButton(text="Изменить курс покупки", callback_data="p2p_set_buy_price")],
+            [InlineKeyboardButton(text=_l('Изменить курс продажи'), callback_data="p2p_set_sell_price")],
+            [InlineKeyboardButton(text=_l('Изменить курс покупки'), callback_data="p2p_set_buy_price")],
             [
-                InlineKeyboardButton(text="📥 Пополнить", callback_data="p2p_deposit"),
-                InlineKeyboardButton(text="📤 Вывести", callback_data="p2p_withdraw")
+                InlineKeyboardButton(text=_l('📥 Пополнить'), callback_data="p2p_deposit"),
+                InlineKeyboardButton(text=_l('📤 Вывести'), callback_data="p2p_withdraw")
             ],
             [
                 InlineKeyboardButton(text=sell_btn_text, callback_data="p2p_toggle_sell"),
                 InlineKeyboardButton(text=buy_btn_text, callback_data="p2p_toggle_buy")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038"),
-                InlineKeyboardButton(text="🔄 Обновить", callback_data="p2p_manage")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038"),
+                InlineKeyboardButton(text=_l('🔄 Обновить'), callback_data="p2p_manage")
             ]
         ]
     )
@@ -16977,6 +16440,7 @@ def render_p2p_manage(user_id):
     return text, keyboard
 
 
+@_localized
 def render_p2p_history(user_id, page=1):
     per_page = 5
     cursor.execute("SELECT COUNT(*) FROM p2p_deals_history WHERE buyer_id = ? OR seller_id = ?", (user_id, user_id))
@@ -16995,27 +16459,27 @@ def render_p2p_history(user_id, page=1):
     rows = cursor.fetchall()
 
     lines = [
-        '🧾 <b>ИСТОРИЯ ОБМЕНОВ</b>',
+        _l('🧾 <b>ИСТОРИЯ ОБМЕНОВ</b>'),
         '<code>·····················</code>'
     ]
 
     if not rows:
-        lines.append('<i>У вас пока нет истории обменов.</i>')
+        lines.append(_l('<i>У вас пока нет истории обменов.</i>'))
     else:
         for buyer_id, seller_id, amount_mp, price_per_mp, total_mcoin, commission, created_at in rows:
             date_short = format_deal_date(created_at)
             if buyer_id == user_id:
-                partner = "Оф. Покупка" if seller_id == 0 else get_user_display_name(seller_id)
-                lines.append(f'💰(К) {format_number(amount_mp)} GMP за {format_number(total_mcoin)} m¢')
+                partner = _l('Оф. Покупка') if seller_id == 0 else get_user_display_name(seller_id)
+                lines.append(_lf('💰(К) {0} GMP за {1} m¢', (_fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_mcoin), '', -1))))
                 lines.append(f'⤷ <i>{partner} · {date_short}</i>')
             else:
-                partner = "Оф. Продажа" if buyer_id == 0 else get_user_display_name(buyer_id)
-                lines.append(f'💳(П) {format_number(amount_mp)} GMP за {format_number(total_mcoin)} m¢')
+                partner = _l('Оф. Продажа') if buyer_id == 0 else get_user_display_name(buyer_id)
+                lines.append(_lf('💳(П) {0} GMP за {1} m¢', (_fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_mcoin), '', -1))))
                 lines.append(f'⤷ <i>{partner} · {date_short}</i>')
 
     lines.append('<code>·····················</code>')
-    lines.append(f'↗️ Показано: {page}/{total_pages}')
-    lines.append('<blockquote>ℹ️ (П) —> Продал, (К) —> Купил</blockquote>')
+    lines.append(_lf('↗️ Показано: {0}/{1}', (_fmt(page, '', -1), _fmt(total_pages, '', -1))))
+    lines.append(_l('<blockquote>ℹ️ (П) —> Продал, (К) —> Купил</blockquote>'))
 
     text = "\n".join(lines)
 
@@ -17034,12 +16498,13 @@ def render_p2p_history(user_id, page=1):
         nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"p2p_hist_{page+1}"))
 
     buttons.append(nav_row)
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
+    buttons.append([InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     return text, keyboard
 
 
+@_localized
 def render_sexchange_menu():
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
@@ -17052,7 +16517,7 @@ def render_sexchange_menu():
     interval = settings.get("interval_minutes", 150)
     last_upd = settings.get("last_update")
 
-    time_left_str = "скоро"
+    time_left_str = _l('скоро')
     if last_upd:
         try:
             last_dt = datetime.fromisoformat(last_upd)
@@ -17061,29 +16526,21 @@ def render_sexchange_menu():
             if remaining > 0:
                 mins = remaining // 60
                 secs = remaining % 60
-                time_left_str = f"{mins}м {secs}с"
+                time_left_str = _lf('{0}м {1}с', (_fmt(mins, '', -1), _fmt(secs, '', -1)))
             else:
-                time_left_str = "сейчас"
+                time_left_str = _l('сейчас')
         except Exception:
             pass
 
-    sell_status_str = "🟢 ВКЛ" if sell_en else "🔴 ВЫКЛ"
-    buy_status_str = "🟢 ВКЛ" if buy_en else "🔴 ВЫКЛ"
+    sell_status_str = _l('🟢 ВКЛ') if sell_en else _l('🔴 ВЫКЛ')
+    buy_status_str = _l('🟢 ВКЛ') if buy_en else _l('🔴 ВЫКЛ')
 
     text = (
-        '⚙️ <b>НАСТРОЙКИ ОБМЕННИКА (/sexchange)</b>\n'
-        '<code>································</code>\n'
-        '📈 <b>Официальные курсы (1 MP):</b>\n'
-        f'├ 💰 <b>Оф. Продажа (бот выкупает):</b> <b>{format_number(sell_rate)} m¢</b> ({sell_status_str})\n'
-        f'└ 🛍 <b>Оф. Покупка (бот продает):</b> <b>{format_number(buy_rate)} m¢</b> ({buy_status_str})\n\n'
-        '📊 <b>Параметры авто-курса:</b>\n'
-        f'├ <b>Диапазон:</b> <b>{format_number(r_min)} — {format_number(r_max)} m¢</b>\n'
-        f'├ <b>Интервал:</b> <b>{interval} мин. ({interval // 60}ч {interval % 60}м)</b>\n'
-        f'└ <b>След. обновление:</b> <b>{time_left_str}</b>'
+        _lf('⚙️ <b>НАСТРОЙКИ ОБМЕННИКА (/sexchange)</b>\n<code>································</code>\n📈 <b>Официальные курсы (1 MP):</b>\n├ 💰 <b>Оф. Продажа (бот выкупает):</b> <b>{0} m¢</b> ({1})\n└ 🛍 <b>Оф. Покупка (бот продает):</b> <b>{2} m¢</b> ({3})\n\n📊 <b>Параметры авто-курса:</b>\n├ <b>Диапазон:</b> <b>{4} — {5} m¢</b>\n├ <b>Интервал:</b> <b>{6} мин. ({7}ч {8}м)</b>\n└ <b>След. обновление:</b> <b>{9}</b>', (_fmt(format_number(sell_rate), '', -1), _fmt(sell_status_str, '', -1), _fmt(format_number(buy_rate), '', -1), _fmt(buy_status_str, '', -1), _fmt(format_number(r_min), '', -1), _fmt(format_number(r_max), '', -1), _fmt(interval, '', -1), _fmt(interval // 60, '', -1), _fmt(interval % 60, '', -1), _fmt(time_left_str, '', -1)))
     )
 
-    btn_sell_tog = "🔴 Отключить оф. продажу" if sell_en else "🟢 Включить оф. продажу"
-    btn_buy_tog = "🔴 Отключить оф. покупку" if buy_en else "🟢 Включить оф. покупку"
+    btn_sell_tog = _l('🔴 Отключить оф. продажу') if sell_en else _l('🟢 Включить оф. продажу')
+    btn_buy_tog = _l('🔴 Отключить оф. покупку') if buy_en else _l('🟢 Включить оф. покупку')
 
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -17094,18 +16551,18 @@ def render_sexchange_menu():
                 InlineKeyboardButton(text=btn_buy_tog, callback_data="sexch_tog_buy")
             ],
             [
-                InlineKeyboardButton(text="🎲 Сгенерировать курс сейчас", callback_data="sexch_reroll")
+                InlineKeyboardButton(text=_l('🎲 Сгенерировать курс сейчас'), callback_data="sexch_reroll")
             ],
             [
-                InlineKeyboardButton(text="✏️ Курс продажи", callback_data="sexch_set_sell"),
-                InlineKeyboardButton(text="✏️ Курс покупки", callback_data="sexch_set_buy")
+                InlineKeyboardButton(text=_l('✏️ Курс продажи'), callback_data="sexch_set_sell"),
+                InlineKeyboardButton(text=_l('✏️ Курс покупки'), callback_data="sexch_set_buy")
             ],
             [
-                InlineKeyboardButton(text="📊 Диапазон", callback_data="sexch_set_range"),
-                InlineKeyboardButton(text="⏱ Интервал", callback_data="sexch_set_interval")
+                InlineKeyboardButton(text=_l('📊 Диапазон'), callback_data="sexch_set_range"),
+                InlineKeyboardButton(text=_l('⏱ Интервал'), callback_data="sexch_set_interval")
             ],
             [
-                InlineKeyboardButton(text="🔄 Обновить меню", callback_data="sexch_refresh")
+                InlineKeyboardButton(text=_l('🔄 Обновить меню'), callback_data="sexch_refresh")
             ]
         ]
     )
@@ -17115,19 +16572,20 @@ def render_sexchange_menu():
 
 @dp.message(Command("exchange", "обменник"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"]))
+@_localized
 async def cmd_exchange(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Перейти в обменник",
+                        text=_l('Перейти в обменник'),
                         url=f"https://t.me/{BOT_USERNAME}?start=p2p"
                     )
                 ]
             ]
         )
-        await message.reply("<i>Эта команда работает только в личных сообщениях!</i>", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Эта команда работает только в личных сообщениях!</i>'), reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
     await show_p2p_main(message, user_id=message.from_user.id, first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
@@ -17135,6 +16593,7 @@ async def cmd_exchange(message: types.Message):
 
 @dp.message(Command("sexchange", "setexchange"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["/sexchange", "sexchange", "/setexchange", "setexchange"]))
+@_localized
 async def cmd_sexchange(message: types.Message):
     if message.from_user.id not in ADMINS:
         return
@@ -17144,6 +16603,7 @@ async def cmd_sexchange(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_main"))
+@_localized
 async def cb_p2p_main(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17151,6 +16611,7 @@ async def cb_p2p_main(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_history", "p2p_hist_1"] or c.data.startswith("p2p_hist_")))
+@_localized
 async def cb_p2p_history(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17168,6 +16629,7 @@ async def cb_p2p_history(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_manage"))
+@_localized
 async def cb_p2p_manage(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17179,6 +16641,7 @@ async def cb_p2p_manage(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_toggle_sell"))
+@_localized
 async def cb_p2p_toggle_sell(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -17194,6 +16657,7 @@ async def cb_p2p_toggle_sell(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_toggle_buy"))
+@_localized
 async def cb_p2p_toggle_buy(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -17228,6 +16692,7 @@ def _get_p2p_offer_page(user_id, page, buying):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_buy_list"] or c.data.startswith("p2p_buy_page_")))
+@_localized
 async def cb_p2p_buy_list(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17247,17 +16712,14 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
     buy_rate = settings.get("official_buy_rate", 10000)
 
     text = (
-        '<b>⚡️ КУПИТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote expandable><i> ℹ️ MPOINT можно приобрести как у официального бота, так и у других игроков. Выгодные предложения находятся в верхней части списка.</i></blockquote>\n'
-        f'<blockquote>📊 Оф. курс покупки: <b>1 MP</b> ≈ {format_number(buy_rate)} mCoin</blockquote>'
+        _lf('<b>⚡️ КУПИТЬ MPOINT</b>\n<code>·····················</code>\n<blockquote expandable><i> ℹ️ MPOINT можно приобрести как у официального бота, так и у других игроков. Выгодные предложения находятся в верхней части списка.</i></blockquote>\n<blockquote>📊 Оф. курс покупки: <b>1 MP</b> ≈ {0} mCoin</blockquote>', (_fmt(format_number(buy_rate), '', -1),))
     )
 
     buttons = []
     if page == 1 and buy_enabled:
         buttons.append([
             InlineKeyboardButton(
-                text=f"🏛 Оф. покупка • {format_number(buy_rate)} m¢",
+                text=_lf('🏛 Оф. покупка • {0} m¢', (_fmt(format_number(buy_rate), '', -1),)),
                 callback_data="p2p_buy_bot",
                 icon_custom_emoji_id="5206607081334906820"
             )
@@ -17286,7 +16748,7 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
         nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"p2p_buy_page_{page+1}"))
 
     buttons.append(nav_row)
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
+    buttons.append([InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     try:
@@ -17297,12 +16759,13 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_buy_bot"))
+@_localized
 async def cb_p2p_buy_bot(callback: types.CallbackQuery):
     await callback.answer()
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
     if not settings.get("official_buy_enabled", 1):
-        await callback.answer("Официальная покупка сейчас отключена!", show_alert=True)
+        await callback.answer(_l('Официальная покупка сейчас отключена!'), show_alert=True)
         return
 
     buy_rate = settings.get("official_buy_rate", 10000)
@@ -17311,16 +16774,7 @@ async def cb_p2p_buy_bot(callback: types.CallbackQuery):
     max_affordable_mp = user_balance // buy_rate if buy_rate > 0 else 0
 
     text = (
-        '<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>КУПИТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        '<i>👤 Продавец: 🏛 Оф. Покупка\n'
-        '💞 Рейтинг: 100%\n'
-        '❇️ Доступно: ∞ MP\n'
-        f'💸 Курс: 1 MP = {format_number(buy_rate)} mCoin\n'
-        '·····················\n'
-        '🔘 Комиссия: 0%</i>\n'
-        f'<blockquote>💰 Твой баланс: <b>{format_number(user_balance)} mCoin</b> (хватит на <b>{format_number(max_affordable_mp)} MP</b>)</blockquote>\n'
-        '<blockquote><i>ℹ️ Выберите количество MP или напишите в чат.</i></blockquote>'
+        _lf('<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>КУПИТЬ MPOINT</b>\n<code>·····················</code>\n<i>👤 Продавец: 🏛 Оф. Покупка\n💞 Рейтинг: 100%\n❇️ Доступно: ∞ MP\n💸 Курс: 1 MP = {0} mCoin\n·····················\n🔘 Комиссия: 0%</i>\n<blockquote>💰 Твой баланс: <b>{1} mCoin</b> (хватит на <b>{2} MP</b>)</blockquote>\n<blockquote><i>ℹ️ Выберите количество MP или напишите в чат.</i></blockquote>', (_fmt(format_number(buy_rate), '', -1), _fmt(format_number(user_balance), '', -1), _fmt(format_number(max_affordable_mp), '', -1)))
     )
 
     p2p_user_action[callback.from_user.id] = "buy_bot_custom"
@@ -17338,10 +16792,10 @@ async def cb_p2p_buy_bot(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="100 MP", callback_data="p2p_bbot_100"),
             ],
             [
-                InlineKeyboardButton(text="Ввести сумму ✏️", callback_data="p2p_bbot_custom")
+                InlineKeyboardButton(text=_l('Ввести сумму ✏️'), callback_data="p2p_bbot_custom")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_buy_list", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_buy_list", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -17352,16 +16806,15 @@ async def cb_p2p_buy_bot(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_bbot_custom"))
+@_localized
 async def cb_p2p_bbot_custom(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "buy_bot_custom"
     text = (
-        '💎 <b>КУПИТЬ MPOINT (ОФ. ПОКУПКА)</b>\n'
-        '<code>·····················</code>\n'
-        '<i>Напишите в ответ или в чат количество MPOINT, которое хотите купить:</i>'
+        _l('💎 <b>КУПИТЬ MPOINT (ОФ. ПОКУПКА)</b>\n<code>·····················</code>\n<i>Напишите в ответ или в чат количество MPOINT, которое хотите купить:</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -17370,6 +16823,7 @@ async def cb_p2p_bbot_custom(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_bbot_")))
+@_localized
 async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
     try:
         amount_mp = int(callback.data.replace("p2p_bbot_", ""))
@@ -17385,9 +16839,9 @@ async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     if user_u["balance"] < total_cost:
         shortage = total_cost - user_u["balance"]
-        err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} mCoin!</b></i>"
+        err_text = _lf('🚫 <i>{0}, не хватает <b>{1} mCoin!</b></i>', (_fmt(user_link, '', -1), _fmt(format_number(shortage), '', -1)))
         err_kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
         )
         try:
             await callback.message.edit_text(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
@@ -17396,17 +16850,13 @@ async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
         return
 
     conf_text = (
-        '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ ПОКУПКИ</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>{user_link}, ты точно <b>хочешь купить {format_number(amount_mp)} MPOINT</b> за <b>{format_number(total_cost)} mCoin?</b></i>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {format_number(buy_rate)} mCoin</blockquote>\n'
-        '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+        _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ ПОКУПКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь купить {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_cost), '', -1), _fmt(format_number(buy_rate), '', -1)))
     )
     conf_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_bbot_{amount_mp}", style="success"),
-                InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_bbot_{amount_mp}", style="success"),
+                InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
             ]
         ]
     )
@@ -17417,26 +16867,23 @@ async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_bbot_")))
+@_localized
 async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
         amount_mp = int(callback.data.replace("p2p_conf_bbot_", ""))
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     ok, res = execute_p2p_buy_from_bot(callback.from_user.id, amount_mp)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '🎉 <b>УСПЕШНАЯ ПОКУПКА MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, ты успешно купил <b>{format_number(res["amount_mp"])} MPOINT</b> за <b>{format_number(res["total_mcoin"])} mCoin!</b>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(res["rate"])} mCoin</blockquote>\n'
-        f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> MPOINT зачислены на твой основной баланс.'
+        _lf('🎉 <b>УСПЕШНАЯ ПОКУПКА MPOINT</b>\n<code>·····················</code>\n{0}, ты успешно купил <b>{1} MPOINT</b> за <b>{2} mCoin!</b>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> MPOINT зачислены на твой основной баланс.', (_fmt(user_link, '', -1), _fmt(format_number(res['amount_mp']), '', -1), _fmt(format_number(res['total_mcoin']), '', -1), _fmt(format_number(res['rate']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -17445,7 +16892,7 @@ async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="1", callback_data=f"p2p_rate_{res['deal_id']}_0_-1", icon_custom_emoji_id="5382261056078881010", style="danger")
             ],
             [
-                InlineKeyboardButton(text="В меню обмена", callback_data="p2p_main", style="primary")
+                InlineKeyboardButton(text=_l('В меню обмена'), callback_data="p2p_main", style="primary")
             ]
         ]
     )
@@ -17456,29 +16903,22 @@ async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_buy_seller_")))
+@_localized
 async def cb_p2p_buy_seller(callback: types.CallbackQuery):
     try:
         seller_id = int(callback.data.replace("p2p_buy_seller_", ""))
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     seller_p2p = get_p2p_account(seller_id)
     if not seller_p2p["sell_order_active"] or seller_p2p["mp_balance"] <= 0 or seller_p2p["sell_price"] <= 0:
-        await callback.answer("У этого продавца больше нет активных заявок!", show_alert=True)
+        await callback.answer(_l('У этого продавца больше нет активных заявок!'), show_alert=True)
         return
 
     display_name = get_user_display_name(seller_id)
     text = (
-        '<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>КУПИТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>👤 Продавец: <a href="tg://user?id={seller_id}">{display_name}</a>\n'
-        f'💞 Рейтинг: {seller_p2p["rating"]}\n'
-        f'❇️ Доступно: {format_number(seller_p2p["mp_balance"])} MPOINT\n'
-        f'💸 Курс: 1 MP = {format_number(seller_p2p["sell_price"])} mCoin\n'
-        '·····················\n'
-        '🔘 Комиссия: 0%</i>\n'
-        '<blockquote><i>ℹ️ Напишите в ответ на это сообщение, сколько вы хотите купить, или выберите один из вариантов ниже.</i></blockquote>'
+        _lf('<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>КУПИТЬ MPOINT</b>\n<code>·····················</code>\n<i>👤 Продавец: <a href="tg://user?id={0}">{1}</a>\n💞 Рейтинг: {2}\n❇️ Доступно: {3} MPOINT\n💸 Курс: 1 MP = {4} mCoin\n·····················\n🔘 Комиссия: 0%</i>\n<blockquote><i>ℹ️ Напишите в ответ на это сообщение, сколько вы хотите купить, или выберите один из вариантов ниже.</i></blockquote>', (_fmt(seller_id, '', -1), _fmt(display_name, '', -1), _fmt(seller_p2p['rating'], '', -1), _fmt(format_number(seller_p2p['mp_balance']), '', -1), _fmt(format_number(seller_p2p['sell_price']), '', -1)))
     )
 
     p2p_user_action[callback.from_user.id] = f"buy_seller_{seller_id}"
@@ -17496,10 +16936,10 @@ async def cb_p2p_buy_seller(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="100 MP", callback_data=f"p2p_bamt_{seller_id}_100"),
             ],
             [
-                InlineKeyboardButton(text="Все MP", callback_data=f"p2p_bamt_{seller_id}_{seller_p2p['mp_balance']}")
+                InlineKeyboardButton(text=_l('Все MP'), callback_data=f"p2p_bamt_{seller_id}_{seller_p2p['mp_balance']}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_buy_list", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_buy_list", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -17510,6 +16950,7 @@ async def cb_p2p_buy_seller(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_bamt_")))
+@_localized
 async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_bamt_", "").split("_")
     if len(parts) < 2:
@@ -17525,9 +16966,9 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
     total_cost = amount_mp * seller_p2p["sell_price"]
     if buyer_u["balance"] < total_cost:
         shortage = total_cost - buyer_u["balance"]
-        err_text = f"🚫 <i>{buyer_link}, не хватает <b>{format_number(shortage)} mCoin!</b></i>"
+        err_text = _lf('🚫 <i>{0}, не хватает <b>{1} mCoin!</b></i>', (_fmt(buyer_link, '', -1), _fmt(format_number(shortage), '', -1)))
         err_kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data=f"p2p_buy_seller_{seller_id}", icon_custom_emoji_id="5255703720078879038")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data=f"p2p_buy_seller_{seller_id}", icon_custom_emoji_id="5255703720078879038")]]
         )
         try:
             await callback.message.edit_text(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
@@ -17536,17 +16977,13 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
         return
 
     conf_text = (
-        '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>{buyer_link}, ты точно <b>хочешь купить {format_number(amount_mp)} MPOINT</b> за <b>{format_number(total_cost)} mCoin?</b></i>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(seller_p2p["sell_price"])} mCoin</blockquote>\n'
-        '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+        _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь купить {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(buyer_link, '', -1), _fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_cost), '', -1), _fmt(format_number(seller_p2p['sell_price']), '', -1)))
     )
     conf_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_buy_{seller_id}_{amount_mp}", style="success"),
-                InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_buy_{seller_id}_{amount_mp}", style="success"),
+                InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
             ]
         ]
     )
@@ -17557,13 +16994,15 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_cancel_buy"))
+@_localized
 async def cb_p2p_cancel_buy(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
-    await callback.answer("Сделка отменена!")
+    await callback.answer(_l('Сделка отменена!'))
     await show_p2p_main(callback, user_id=callback.from_user.id, first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name), edit=True)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_buy_")))
+@_localized
 async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     parts = callback.data.replace("p2p_conf_buy_", "").split("_")
@@ -17575,17 +17014,13 @@ async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
     buyer_id = callback.from_user.id
     ok, res = execute_p2p_buy_deal(buyer_id, seller_id, amount_mp)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     seller_name = get_user_display_name(seller_id)
     buyer_link = get_user_mention(buyer_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n'
-        '<code>·····················</code>\n'
-        f'{buyer_link}, ты успешно купил <b>{format_number(res["amount_mp"])} MPOINT</b> у <a href="tg://user?id={seller_id}">{seller_name}</a> за <b>{format_number(res["total_mcoin"])} mCoin!</b>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(res["rate"])} mCoin</blockquote>\n'
-        f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> MPOINT зачислены на твой основной баланс.'
+        _lf('🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n<code>·····················</code>\n{0}, ты успешно купил <b>{1} MPOINT</b> у <a href="tg://user?id={2}">{3}</a> за <b>{4} mCoin!</b>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {5} mCoin</blockquote>\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> MPOINT зачислены на твой основной баланс.', (_fmt(buyer_link, '', -1), _fmt(format_number(res['amount_mp']), '', -1), _fmt(seller_id, '', -1), _fmt(seller_name, '', -1), _fmt(format_number(res['total_mcoin']), '', -1), _fmt(format_number(res['rate']), '', -1)))
     )
 
     kb = InlineKeyboardMarkup(
@@ -17595,7 +17030,7 @@ async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="1", callback_data=f"p2p_rate_{res['deal_id']}_{seller_id}_-1", icon_custom_emoji_id="5382261056078881010", style="danger")
             ],
             [
-                InlineKeyboardButton(text="В меню обмена", callback_data="p2p_main", style="primary")
+                InlineKeyboardButton(text=_l('В меню обмена'), callback_data="p2p_main", style="primary")
             ]
         ]
     )
@@ -17606,6 +17041,7 @@ async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_rate_")))
+@_localized
 async def cb_p2p_rate_deal(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_rate_", "").split("_")
     if len(parts) < 3:
@@ -17626,12 +17062,12 @@ async def cb_p2p_rate_deal(callback: types.CallbackQuery):
         else:
             cursor.execute("UPDATE p2p_accounts SET rating = rating + ? WHERE user_id = ?", (delta, target_id))
         conn.commit()
-        await callback.answer("Спасибо за отзыв!", show_alert=True)
+        await callback.answer(_l('Спасибо за отзыв!'), show_alert=True)
     except Exception:
-        await callback.answer("Вы уже оставили отзыв по этой сделке!", show_alert=True)
+        await callback.answer(_l('Вы уже оставили отзыв по этой сделке!'), show_alert=True)
 
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="В меню обмена", callback_data="p2p_main", style="primary")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('В меню обмена'), callback_data="p2p_main", style="primary")]]
     )
     try:
         await callback.message.edit_reply_markup(reply_markup=kb)
@@ -17641,6 +17077,7 @@ async def cb_p2p_rate_deal(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ["p2p_sell_list"] or c.data.startswith("p2p_sell_page_")))
+@_localized
 async def cb_p2p_sell_list(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
@@ -17660,17 +17097,14 @@ async def cb_p2p_sell_list(callback: types.CallbackQuery):
     sell_rate = settings.get("official_sell_rate", 10000)
 
     text = (
-        '<b><tg-emoji emoji-id="5834775782433492415">🔥</tg-emoji> ПРОДАТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        '<blockquote expandable><i> ℹ️ Вы можете продать MPOINT как официальному боту, так и другим игрокам. Цена отображается уже с учётом всех параметров.</i></blockquote>\n'
-        f'<blockquote><tg-emoji emoji-id="5431577498364158238">📊</tg-emoji> Оф. курс продажи: <b>1 MP</b> ≈ {format_number(sell_rate)} mCoin</blockquote>'
+        _lf('<b><tg-emoji emoji-id="5834775782433492415">🔥</tg-emoji> ПРОДАТЬ MPOINT</b>\n<code>·····················</code>\n<blockquote expandable><i> ℹ️ Вы можете продать MPOINT как официальному боту, так и другим игрокам. Цена отображается уже с учётом всех параметров.</i></blockquote>\n<blockquote><tg-emoji emoji-id="5431577498364158238">📊</tg-emoji> Оф. курс продажи: <b>1 MP</b> ≈ {0} mCoin</blockquote>', (_fmt(format_number(sell_rate), '', -1),))
     )
 
     buttons = []
     if page == 1 and sell_enabled:
         buttons.append([
             InlineKeyboardButton(
-                text=f"🏛 Оф. продажа • {format_number(sell_rate)} m¢",
+                text=_lf('🏛 Оф. продажа • {0} m¢', (_fmt(format_number(sell_rate), '', -1),)),
                 callback_data="p2p_sell_bot",
                 icon_custom_emoji_id="5206607081334906820"
             )
@@ -17699,7 +17133,7 @@ async def cb_p2p_sell_list(callback: types.CallbackQuery):
         nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"p2p_sell_page_{page+1}"))
 
     buttons.append(nav_row)
-    buttons.append([InlineKeyboardButton(text="Назад", callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
+    buttons.append([InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_main", icon_custom_emoji_id="5255703720078879038")])
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=buttons)
     try:
@@ -17709,12 +17143,13 @@ async def cb_p2p_sell_list(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_sell_bot"))
+@_localized
 async def cb_p2p_sell_bot(callback: types.CallbackQuery):
     await callback.answer()
     update_p2p_rate_fluctuation(force=False)
     settings = get_p2p_settings()
     if not settings.get("official_sell_enabled", 1):
-        await callback.answer("Официальная продажа сейчас отключена!", show_alert=True)
+        await callback.answer(_l('Официальная продажа сейчас отключена!'), show_alert=True)
         return
 
     deals_24h, mp_sold_24h = get_p2p_bot_24h_stats()
@@ -17723,17 +17158,7 @@ async def cb_p2p_sell_bot(callback: types.CallbackQuery):
     sell_rate = settings.get("official_sell_rate", 10000)
 
     text = (
-        '<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>ПРОДАТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        '<i>👤 Покупатель: 🏛 Оф. Продажа\n'
-        '💞 Рейтинг: 100%\n'
-        '❇️ Доступно: ∞ mCoin\n'
-        f'💸 Курс: 1 MP = {format_number(sell_rate)} mCoin\n'
-        '·····················\n'
-        '🔘 Комиссия: 0%</i>\n'
-        f'<blockquote><tg-emoji emoji-id="5332455502917949981">🏦</tg-emoji> <b>Продано за 24ч:</b> {deals_24h} / {format_number(mp_sold_24h)} MP</blockquote>\n'
-        f'<blockquote>💰 Твой баланс: <b>{format_number(user_mp)} MP</b></blockquote>\n'
-        '<blockquote><i>ℹ️ Выберите количество MP или напишите в чат.</i></blockquote>'
+        _lf('<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>ПРОДАТЬ MPOINT</b>\n<code>·····················</code>\n<i>👤 Покупатель: 🏛 Оф. Продажа\n💞 Рейтинг: 100%\n❇️ Доступно: ∞ mCoin\n💸 Курс: 1 MP = {0} mCoin\n·····················\n🔘 Комиссия: 0%</i>\n<blockquote><tg-emoji emoji-id="5332455502917949981">🏦</tg-emoji> <b>Продано за 24ч:</b> {1} / {2} MP</blockquote>\n<blockquote>💰 Твой баланс: <b>{3} MP</b></blockquote>\n<blockquote><i>ℹ️ Выберите количество MP или напишите в чат.</i></blockquote>', (_fmt(format_number(sell_rate), '', -1), _fmt(deals_24h, '', -1), _fmt(format_number(mp_sold_24h), '', -1), _fmt(format_number(user_mp), '', -1)))
     )
 
     p2p_user_action[callback.from_user.id] = "sell_bot_custom"
@@ -17751,10 +17176,10 @@ async def cb_p2p_sell_bot(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="100 MP", callback_data="p2p_sbot_100"),
             ],
             [
-                InlineKeyboardButton(text="Все MP", callback_data=f"p2p_sbot_{user_mp}")
+                InlineKeyboardButton(text=_l('Все MP'), callback_data=f"p2p_sbot_{user_mp}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_sell_list", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_sell_list", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -17765,6 +17190,7 @@ async def cb_p2p_sell_bot(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sbot_")))
+@_localized
 async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
     try:
         amount_mp = int(callback.data.replace("p2p_sbot_", ""))
@@ -17779,9 +17205,9 @@ async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
 
     if user_u.get("mp_balance", 0) < amount_mp:
         shortage = amount_mp - user_u.get("mp_balance", 0)
-        err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} MP!</b></i>"
+        err_text = _lf('🚫 <i>{0}, не хватает <b>{1} MP!</b></i>', (_fmt(user_link, '', -1), _fmt(format_number(shortage), '', -1)))
         err_kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_sell_bot", icon_custom_emoji_id="5255703720078879038")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_sell_bot", icon_custom_emoji_id="5255703720078879038")]]
         )
         try:
             await callback.message.edit_text(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
@@ -17791,17 +17217,13 @@ async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
 
     total_mcoin = amount_mp * sell_rate
     conf_text = (
-        '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>{user_link}, ты точно <b>хочешь продать {format_number(amount_mp)} MPOINT</b> за <b>{format_number(total_mcoin)} mCoin?</b></i>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {format_number(sell_rate)} mCoin</blockquote>\n'
-        '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+        _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь продать {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_mcoin), '', -1), _fmt(format_number(sell_rate), '', -1)))
     )
     conf_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_sbot_{amount_mp}", style="success"),
-                InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_sbot_{amount_mp}", style="success"),
+                InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
             ]
         ]
     )
@@ -17812,26 +17234,23 @@ async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_sbot_")))
+@_localized
 async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
         amount_mp = int(callback.data.replace("p2p_conf_sbot_", ""))
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     ok, res = execute_p2p_sell_to_bot(callback.from_user.id, amount_mp)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '🎉 <b>УСПЕШНАЯ ПРОДАЖА</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, ты успешно продал <b>{format_number(res["amount_mp"])} MPOINT</b> за <b>{format_number(res["total_mcoin"])} mCoin!</b>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(res["rate"])} mCoin</blockquote>\n'
-        f'<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{format_number(get_user(callback.from_user.id)["balance"])} mCoin</b>'
+        _lf('🎉 <b>УСПЕШНАЯ ПРОДАЖА</b>\n<code>·····················</code>\n{0}, ты успешно продал <b>{1} MPOINT</b> за <b>{2} mCoin!</b>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{4} mCoin</b>', (_fmt(user_link, '', -1), _fmt(format_number(res['amount_mp']), '', -1), _fmt(format_number(res['total_mcoin']), '', -1), _fmt(format_number(res['rate']), '', -1), _fmt(format_number(get_user(callback.from_user.id)['balance']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -17840,7 +17259,7 @@ async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="1", callback_data=f"p2p_rate_{res['deal_id']}_0_-1", icon_custom_emoji_id="5382261056078881010", style="danger")
             ],
             [
-                InlineKeyboardButton(text="В меню обмена", callback_data="p2p_main", style="primary")
+                InlineKeyboardButton(text=_l('В меню обмена'), callback_data="p2p_main", style="primary")
             ]
         ]
     )
@@ -17851,16 +17270,17 @@ async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sell_buyer_")))
+@_localized
 async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
     try:
         buyer_id = int(callback.data.replace("p2p_sell_buyer_", ""))
     except Exception:
-        await callback.answer("Ошибка!", show_alert=True)
+        await callback.answer(_l('Ошибка!'), show_alert=True)
         return
 
     buyer_p2p = get_p2p_account(buyer_id)
     if not buyer_p2p["buy_order_active"] or buyer_p2p["mcoin_balance"] <= 0 or buyer_p2p["buy_price"] <= 0:
-        await callback.answer("У этого покупателя больше нет активных заявок!", show_alert=True)
+        await callback.answer(_l('У этого покупателя больше нет активных заявок!'), show_alert=True)
         return
 
     display_name = get_user_display_name(buyer_id)
@@ -17869,15 +17289,7 @@ async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
     seller_mp = seller_u.get("mp_balance", 0) or 0
 
     text = (
-        '<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>ПРОДАТЬ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>👤 Покупатель: <a href="tg://user?id={buyer_id}">{display_name}</a>\n'
-        f'💞 Рейтинг: {buyer_p2p["rating"]}\n'
-        f'❇️ Готов купить: до {format_number(max_mp_buyer_can_buy)} MP\n'
-        f'💸 Курс: 1 MP = {format_number(buyer_p2p["buy_price"])} mCoin\n'
-        '·····················\n'
-        '🔘 Комиссия: 0%</i>\n'
-        '<blockquote><i>ℹ️ Напишите в ответ на это сообщение, сколько вы хотите продать, или выберите один из вариантов ниже.</i></blockquote>'
+        _lf('<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji><b>ПРОДАТЬ MPOINT</b>\n<code>·····················</code>\n<i>👤 Покупатель: <a href="tg://user?id={0}">{1}</a>\n💞 Рейтинг: {2}\n❇️ Готов купить: до {3} MP\n💸 Курс: 1 MP = {4} mCoin\n·····················\n🔘 Комиссия: 0%</i>\n<blockquote><i>ℹ️ Напишите в ответ на это сообщение, сколько вы хотите продать, или выберите один из вариантов ниже.</i></blockquote>', (_fmt(buyer_id, '', -1), _fmt(display_name, '', -1), _fmt(buyer_p2p['rating'], '', -1), _fmt(format_number(max_mp_buyer_can_buy), '', -1), _fmt(format_number(buyer_p2p['buy_price']), '', -1)))
     )
 
     p2p_user_action[callback.from_user.id] = f"sell_buyer_{buyer_id}"
@@ -17895,10 +17307,10 @@ async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="100 MP", callback_data=f"p2p_sbuy_{buyer_id}_100"),
             ],
             [
-                InlineKeyboardButton(text="Все мои MP", callback_data=f"p2p_sbuy_{buyer_id}_{min(seller_mp, max_mp_buyer_can_buy)}")
+                InlineKeyboardButton(text=_l('Все мои MP'), callback_data=f"p2p_sbuy_{buyer_id}_{min(seller_mp, max_mp_buyer_can_buy)}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_sell_list", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_sell_list", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -17909,6 +17321,7 @@ async def cb_p2p_sell_buyer(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_sbuy_")))
+@_localized
 async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
     parts = callback.data.replace("p2p_sbuy_", "").split("_")
     if len(parts) < 2:
@@ -17923,9 +17336,9 @@ async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
 
     if seller_u.get("mp_balance", 0) < amount_mp:
         shortage = amount_mp - seller_u.get("mp_balance", 0)
-        err_text = f"🚫 <i>{seller_link}, не хватает <b>{format_number(shortage)} MP!</b></i>"
+        err_text = _lf('🚫 <i>{0}, не хватает <b>{1} MP!</b></i>', (_fmt(seller_link, '', -1), _fmt(format_number(shortage), '', -1)))
         err_kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data=f"p2p_sell_buyer_{buyer_id}", icon_custom_emoji_id="5255703720078879038")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data=f"p2p_sell_buyer_{buyer_id}", icon_custom_emoji_id="5255703720078879038")]]
         )
         try:
             await callback.message.edit_text(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
@@ -17935,17 +17348,13 @@ async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
 
     total_mcoin = amount_mp * buyer_p2p["buy_price"]
     conf_text = (
-        '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-        '<code>·····················</code>\n'
-        f'<i>{seller_link}, ты точно <b>хочешь продать {format_number(amount_mp)} MPOINT</b> за <b>{format_number(total_mcoin)} mCoin?</b></i>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(buyer_p2p["buy_price"])} mCoin</blockquote>\n'
-        '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+        _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь продать {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(seller_link, '', -1), _fmt(format_number(amount_mp), '', -1), _fmt(format_number(total_mcoin), '', -1), _fmt(format_number(buyer_p2p['buy_price']), '', -1)))
     )
     conf_kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_sbuy_{buyer_id}_{amount_mp}", style="success"),
-                InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_sbuy_{buyer_id}_{amount_mp}", style="success"),
+                InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
             ]
         ]
     )
@@ -17956,6 +17365,7 @@ async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_conf_sbuy_")))
+@_localized
 async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     parts = callback.data.replace("p2p_conf_sbuy_", "").split("_")
@@ -17967,17 +17377,13 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
     seller_id = callback.from_user.id
     ok, res = execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     buyer_name = get_user_display_name(buyer_id)
     seller_link = get_user_mention(seller_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n'
-        '<code>·····················</code>\n'
-        f'{seller_link}, ты успешно продал <b>{format_number(res["amount_mp"])} MPOINT</b> покупателю <a href="tg://user?id={buyer_id}">{buyer_name}</a> за <b>{format_number(res["total_mcoin"])} mCoin!</b>\n'
-        f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(res["rate"])} mCoin</blockquote>\n'
-        f'<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{format_number(get_user(seller_id)["balance"])} mCoin</b>'
+        _lf('🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n<code>·····················</code>\n{0}, ты успешно продал <b>{1} MPOINT</b> покупателю <a href="tg://user?id={2}">{3}</a> за <b>{4} mCoin!</b>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {5} mCoin</blockquote>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{6} mCoin</b>', (_fmt(seller_link, '', -1), _fmt(format_number(res['amount_mp']), '', -1), _fmt(buyer_id, '', -1), _fmt(buyer_name, '', -1), _fmt(format_number(res['total_mcoin']), '', -1), _fmt(format_number(res['rate']), '', -1), _fmt(format_number(get_user(seller_id)['balance']), '', -1)))
     )
 
     kb = InlineKeyboardMarkup(
@@ -17987,7 +17393,7 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="1", callback_data=f"p2p_rate_{res['deal_id']}_{buyer_id}_-1", icon_custom_emoji_id="5382261056078881010", style="danger")
             ],
             [
-                InlineKeyboardButton(text="В меню обмена", callback_data="p2p_main", style="primary")
+                InlineKeyboardButton(text=_l('В меню обмена'), callback_data="p2p_main", style="primary")
             ]
         ]
     )
@@ -17999,12 +17405,11 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_deposit"))
+@_localized
 async def cb_p2p_deposit(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        '📥 <b>ПОПОЛНЕНИЕ БАЛАНСА ОБМЕННИКА</b>\n'
-        '<code>·····················</code>\n'
-        '<i>Выберите, какую валюту вы хотите перевести с основного баланса на баланс обменника:</i>'
+        _l('📥 <b>ПОПОЛНЕНИЕ БАЛАНСА ОБМЕННИКА</b>\n<code>·····················</code>\n<i>Выберите, какую валюту вы хотите перевести с основного баланса на баланс обменника:</i>')
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18013,7 +17418,7 @@ async def cb_p2p_deposit(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="MPOINT 💎", callback_data="p2p_dep_mpoint")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18024,6 +17429,7 @@ async def cb_p2p_deposit(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_dep_mcoin"))
+@_localized
 async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "dep_mcoin"
@@ -18032,14 +17438,10 @@ async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
     p2p = get_p2p_account(callback.from_user.id)
     today_str = get_msk_today_str()
     is_first = (p2p["last_deposit_date"] != today_str)
-    comm_str = "<b>0% (1-е пополнение за день)</b>" if is_first else "<b>1.5%</b>"
+    comm_str = _l('<b>0% (1-е пополнение за день)</b>') if is_first else "<b>1.5%</b>"
 
     text = (
-        '📥 <b>ПОПОЛНЕНИЕ mCoin</b>\n'
-        '<code>·····················</code>\n'
-        f'💰 Основной баланс: <b>{format_number(bal)} m¢</b>\n'
-        f'🔘 Комиссия: {comm_str}\n\n'
-        '<i>Напишите в ответ или в чат сумму mCoin для пополнения, или выберите вариант:</i>'
+        _lf('📥 <b>ПОПОЛНЕНИЕ mCoin</b>\n<code>·····················</code>\n💰 Основной баланс: <b>{0} m¢</b>\n🔘 Комиссия: {1}\n\n<i>Напишите в ответ или в чат сумму mCoin для пополнения, или выберите вариант:</i>', (_fmt(format_number(bal), '', -1), _fmt(comm_str, '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18051,10 +17453,10 @@ async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
             [
                 InlineKeyboardButton(text="5M", callback_data="p2p_dmc_5000000"),
                 InlineKeyboardButton(text="10M", callback_data="p2p_dmc_10000000"),
-                InlineKeyboardButton(text="Все m¢", callback_data=f"p2p_dmc_{bal}")
+                InlineKeyboardButton(text=_l('Все m¢'), callback_data=f"p2p_dmc_{bal}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_deposit", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_deposit", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18065,6 +17467,7 @@ async def cb_p2p_dep_mcoin(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_dmc_")))
+@_localized
 async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18073,21 +17476,16 @@ async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
         return
     ok, res = deposit_to_p2p_mcoin(callback.from_user.id, amount)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
-    comm_str = "<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>" if res["is_first"] else f"<blockquote><b>🔘 Комиссия: 1,5% ({format_number(res['fee'])} mCoin)</b></blockquote>"
+    comm_str = _l('<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>') if res["is_first"] else _lf('<blockquote><b>🔘 Комиссия: 1,5% ({0} mCoin)</b></blockquote>', (_fmt(format_number(res['fee']), '', -1),))
     succ_text = (
-        '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, твои <b>{format_number(amount)} mCoin</b> зачислены на баланс обменника.\n'
-        f'{comm_str}\n'
-        f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>\n'
-        f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+        _lf('✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n<code>·····················</code>\n{0}, твои <b>{1} mCoin</b> зачислены на баланс обменника.\n{2}\n<blockquote>💰 mCoin (обменник): <b>{3}</b></blockquote>\n<blockquote>💎 MPOINT (обменник): <b>{4}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(comm_str, '', -1), _fmt(format_number(res['mcoin_balance']), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
     )
     try:
         await callback.message.edit_text(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18096,6 +17494,7 @@ async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_dep_mpoint"))
+@_localized
 async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "dep_mpoint"
@@ -18103,11 +17502,7 @@ async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
     bal = user_u.get("mp_balance", 0)
 
     text = (
-        '📥 <b>ПОПОЛНЕНИЕ MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        f'💎 Основной баланс: <b>{format_number(bal)} MP</b>\n'
-        '🔘 Комиссия: <b>0%</b>\n\n'
-        '<i>Напишите в ответ или в чат количество MPOINT для пополнения, или выберите вариант:</i>'
+        _lf('📥 <b>ПОПОЛНЕНИЕ MPOINT</b>\n<code>·····················</code>\n💎 Основной баланс: <b>{0} MP</b>\n🔘 Комиссия: <b>0%</b>\n\n<i>Напишите в ответ или в чат количество MPOINT для пополнения, или выберите вариант:</i>', (_fmt(format_number(bal), '', -1),))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18119,10 +17514,10 @@ async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
             [
                 InlineKeyboardButton(text="50 MP", callback_data="p2p_dmp_50"),
                 InlineKeyboardButton(text="100 MP", callback_data="p2p_dmp_100"),
-                InlineKeyboardButton(text="Все MP", callback_data=f"p2p_dmp_{bal}")
+                InlineKeyboardButton(text=_l('Все MP'), callback_data=f"p2p_dmp_{bal}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_deposit", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_deposit", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18133,6 +17528,7 @@ async def cb_p2p_dep_mpoint(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_dmp_")))
+@_localized
 async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18141,20 +17537,15 @@ async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
         return
     ok, res = deposit_to_p2p_mpoint(callback.from_user.id, amount)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, твои <b>{format_number(amount)} MPOINT</b> зачислены на баланс обменника.\n'
-        '<blockquote><b>🆓 Комиссия не списана</b></blockquote>\n'
-        f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>\n'
-        f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+        _lf('✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n<code>·····················</code>\n{0}, твои <b>{1} MPOINT</b> зачислены на баланс обменника.\n<blockquote><b>🆓 Комиссия не списана</b></blockquote>\n<blockquote>💰 mCoin (обменник): <b>{2}</b></blockquote>\n<blockquote>💎 MPOINT (обменник): <b>{3}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(res['mcoin_balance']), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
     )
     try:
         await callback.message.edit_text(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18163,12 +17554,11 @@ async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_withdraw"))
+@_localized
 async def cb_p2p_withdraw(callback: types.CallbackQuery):
     await callback.answer()
     text = (
-        '📤 <b>ВЫВОД С БАЛАНСА ОБМЕННИКА</b>\n'
-        '<code>·····················</code>\n'
-        '<i>Выберите, какую валюту вы хотите вывести с обменника на основной баланс:</i>'
+        _l('📤 <b>ВЫВОД С БАЛАНСА ОБМЕННИКА</b>\n<code>·····················</code>\n<i>Выберите, какую валюту вы хотите вывести с обменника на основной баланс:</i>')
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18177,7 +17567,7 @@ async def cb_p2p_withdraw(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="MPOINT 💎", callback_data="p2p_wth_mpoint")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18188,6 +17578,7 @@ async def cb_p2p_withdraw(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_wth_mcoin"))
+@_localized
 async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "wth_mcoin"
@@ -18195,10 +17586,7 @@ async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
     bal = p2p["mcoin_balance"]
 
     text = (
-        '📤 <b>ВЫВОД mCoin</b>\n'
-        '<code>·····················</code>\n'
-        f'💰 На балансе обменника: <b>{format_number(bal)} m¢</b>\n\n'
-        '<i>Напишите в ответ или в чат сумму mCoin для вывода, или выберите вариант:</i>'
+        _lf('📤 <b>ВЫВОД mCoin</b>\n<code>·····················</code>\n💰 На балансе обменника: <b>{0} m¢</b>\n\n<i>Напишите в ответ или в чат сумму mCoin для вывода, или выберите вариант:</i>', (_fmt(format_number(bal), '', -1),))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18210,10 +17598,10 @@ async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
             [
                 InlineKeyboardButton(text="5M", callback_data="p2p_wmc_5000000"),
                 InlineKeyboardButton(text="10M", callback_data="p2p_wmc_10000000"),
-                InlineKeyboardButton(text="Все m¢", callback_data=f"p2p_wmc_{bal}")
+                InlineKeyboardButton(text=_l('Все m¢'), callback_data=f"p2p_wmc_{bal}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_withdraw", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_withdraw", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18224,6 +17612,7 @@ async def cb_p2p_wth_mcoin(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_wmc_")))
+@_localized
 async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18232,18 +17621,15 @@ async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
         return
     ok, res = withdraw_from_p2p_mcoin(callback.from_user.id, amount)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, твои <b>{format_number(amount)} mCoin</b> выведены на основной баланс.\n'
-        f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>'
+        _lf('✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n<code>·····················</code>\n{0}, твои <b>{1} mCoin</b> выведены на основной баланс.\n<blockquote>💰 mCoin (обменник): <b>{2}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(res['mcoin_balance']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
     )
     try:
         await callback.message.edit_text(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18252,6 +17638,7 @@ async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_wth_mpoint"))
+@_localized
 async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "wth_mpoint"
@@ -18259,10 +17646,7 @@ async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
     bal = p2p["mp_balance"]
 
     text = (
-        '📤 <b>ВЫВОД MPOINT</b>\n'
-        '<code>·····················</code>\n'
-        f'💎 На балансе обменника: <b>{format_number(bal)} MP</b>\n\n'
-        '<i>Напишите в ответ или в чат количество MPOINT для вывода, или выберите вариант:</i>'
+        _lf('📤 <b>ВЫВОД MPOINT</b>\n<code>·····················</code>\n💎 На балансе обменника: <b>{0} MP</b>\n\n<i>Напишите в ответ или в чат количество MPOINT для вывода, или выберите вариант:</i>', (_fmt(format_number(bal), '', -1),))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -18274,10 +17658,10 @@ async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
             [
                 InlineKeyboardButton(text="50 MP", callback_data="p2p_wmp_50"),
                 InlineKeyboardButton(text="100 MP", callback_data="p2p_wmp_100"),
-                InlineKeyboardButton(text="Все MP", callback_data=f"p2p_wmp_{bal}")
+                InlineKeyboardButton(text=_l('Все MP'), callback_data=f"p2p_wmp_{bal}")
             ],
             [
-                InlineKeyboardButton(text="Назад", callback_data="p2p_withdraw", icon_custom_emoji_id="5255703720078879038")
+                InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_withdraw", icon_custom_emoji_id="5255703720078879038")
             ]
         ]
     )
@@ -18288,6 +17672,7 @@ async def cb_p2p_wth_mpoint(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("p2p_wmp_")))
+@_localized
 async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     try:
@@ -18296,18 +17681,15 @@ async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
         return
     ok, res = withdraw_from_p2p_mpoint(callback.from_user.id, amount)
     if not ok:
-        await callback.answer(f"Ошибка: {res}", show_alert=True)
+        await callback.answer(_lf('Ошибка: {0}', (_fmt(res, '', -1),)), show_alert=True)
         return
 
     user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
-        '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
-        '<code>·····················</code>\n'
-        f'{user_link}, твои <b>{format_number(amount)} MPOINT</b> выведены на основной баланс.\n'
-        f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+        _lf('✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n<code>·····················</code>\n{0}, твои <b>{1} MPOINT</b> выведены на основной баланс.\n<blockquote>💎 MPOINT (обменник): <b>{2}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
     )
     try:
         await callback.message.edit_text(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18317,16 +17699,15 @@ async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_set_sell_price"))
+@_localized
 async def cb_p2p_set_sell_price(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "set_sell_price"
     text = (
-        '💰 <b>ИЗМЕНИТЬ КУРС ПРОДАЖИ</b>\n'
-        '<code>·····················</code>\n'
-        '<i>Напишите новый курс продажи (сколько mCoin вы хотите получать за 1 MP, например: <b>15000</b> или <b>15.000</b>):</i>'
+        _l('💰 <b>ИЗМЕНИТЬ КУРС ПРОДАЖИ</b>\n<code>·····················</code>\n<i>Напишите новый курс продажи (сколько mCoin вы хотите получать за 1 MP, например: <b>15000</b> или <b>15.000</b>):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18335,16 +17716,15 @@ async def cb_p2p_set_sell_price(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "p2p_set_buy_price"))
+@_localized
 async def cb_p2p_set_buy_price(callback: types.CallbackQuery):
     await callback.answer()
     p2p_user_action[callback.from_user.id] = "set_buy_price"
     text = (
-        '💳 <b>ИЗМЕНИТЬ КУРС ПОКУПКИ</b>\n'
-        '<code>·····················</code>\n'
-        '<i>Напишите новый курс покупки (сколько mCoin вы готовы платить за 1 MP, например: <b>12000</b> или <b>12.000</b>):</i>'
+        _l('💳 <b>ИЗМЕНИТЬ КУРС ПОКУПКИ</b>\n<code>·····················</code>\n<i>Напишите новый курс покупки (сколько mCoin вы готовы платить за 1 MP, например: <b>12000</b> или <b>12.000</b>):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_manage", icon_custom_emoji_id="5255703720078879038")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18353,17 +17733,19 @@ async def cb_p2p_set_buy_price(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "noop_p2p"))
+@_localized
 async def cb_noop_p2p(callback: types.CallbackQuery):
     await callback.answer()
 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_refresh"))
+@_localized
 async def cb_sexch_refresh(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     admin_sexchange_state.pop(callback.from_user.id, None)
-    await callback.answer("Обновлено!")
+    await callback.answer(_l('Обновлено!'))
     text, kb = render_sexchange_menu()
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18372,6 +17754,7 @@ async def cb_sexch_refresh(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_tog_sell"))
+@_localized
 async def cb_sexch_tog_sell(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18379,7 +17762,7 @@ async def cb_sexch_tog_sell(callback: types.CallbackQuery):
     new_val = 0 if settings.get("official_sell_enabled", 1) else 1
     cursor.execute("UPDATE p2p_settings SET official_sell_enabled = ? WHERE id = 1", (new_val,))
     conn.commit()
-    await callback.answer("Статус оф. продажи изменен!")
+    await callback.answer(_l('Статус оф. продажи изменен!'))
     text, kb = render_sexchange_menu()
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18388,6 +17771,7 @@ async def cb_sexch_tog_sell(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_tog_buy"))
+@_localized
 async def cb_sexch_tog_buy(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
@@ -18395,7 +17779,7 @@ async def cb_sexch_tog_buy(callback: types.CallbackQuery):
     new_val = 0 if settings.get("official_buy_enabled", 1) else 1
     cursor.execute("UPDATE p2p_settings SET official_buy_enabled = ? WHERE id = 1", (new_val,))
     conn.commit()
-    await callback.answer("Статус оф. покупки изменен!")
+    await callback.answer(_l('Статус оф. покупки изменен!'))
     text, kb = render_sexchange_menu()
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18404,11 +17788,12 @@ async def cb_sexch_tog_buy(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_reroll"))
+@_localized
 async def cb_sexch_reroll(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     ok, res = update_p2p_rate_fluctuation(force=True)
-    await callback.answer(f"Новый курс: {format_number(res['official_sell_rate'])} mCoin!", show_alert=True)
+    await callback.answer(_lf('Новый курс: {0} mCoin!', (_fmt(format_number(res['official_sell_rate']), '', -1),)), show_alert=True)
     text, kb = render_sexchange_menu()
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18417,18 +17802,17 @@ async def cb_sexch_reroll(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_sell"))
+@_localized
 async def cb_sexch_set_sell(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     admin_sexchange_state[callback.from_user.id] = "set_sell_rate"
     await callback.answer()
     text = (
-        '✏️ <b>ЗАДАТЬ КУРС ОФ. ПРОДАЖИ</b>\n'
-        '<code>································</code>\n'
-        '<i>Напишите новый фиксированный курс продажи для бота (например: <b>15000</b> или <b>15.000</b>):</i>'
+        _l('✏️ <b>ЗАДАТЬ КУРС ОФ. ПРОДАЖИ</b>\n<code>································</code>\n<i>Напишите новый фиксированный курс продажи для бота (например: <b>15000</b> или <b>15.000</b>):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад в /sexchange", callback_data="sexch_refresh")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад в /sexchange'), callback_data="sexch_refresh")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18437,18 +17821,17 @@ async def cb_sexch_set_sell(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_buy"))
+@_localized
 async def cb_sexch_set_buy(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     admin_sexchange_state[callback.from_user.id] = "set_buy_rate"
     await callback.answer()
     text = (
-        '✏️ <b>ЗАДАТЬ КУРС ОФ. ПОКУПКИ</b>\n'
-        '<code>································</code>\n'
-        '<i>Напишите новый фиксированный курс покупки для бота (например: <b>15000</b> или <b>15.000</b>):</i>'
+        _l('✏️ <b>ЗАДАТЬ КУРС ОФ. ПОКУПКИ</b>\n<code>································</code>\n<i>Напишите новый фиксированный курс покупки для бота (например: <b>15000</b> или <b>15.000</b>):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад в /sexchange", callback_data="sexch_refresh")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад в /sexchange'), callback_data="sexch_refresh")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18457,18 +17840,17 @@ async def cb_sexch_set_buy(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_range"))
+@_localized
 async def cb_sexch_set_range(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     admin_sexchange_state[callback.from_user.id] = "set_range"
     await callback.answer()
     text = (
-        '📊 <b>ИЗМЕНИТЬ ДИАПАЗОН СКАЧКОВ КУРСА</b>\n'
-        '<code>································</code>\n'
-        '<i>Напишите минимальный и максимальный курс через дефис или пробел (например: <b>7000-29000</b> или <b>7.000-29.000</b>):</i>'
+        _l('📊 <b>ИЗМЕНИТЬ ДИАПАЗОН СКАЧКОВ КУРСА</b>\n<code>································</code>\n<i>Напишите минимальный и максимальный курс через дефис или пробел (например: <b>7000-29000</b> или <b>7.000-29.000</b>):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад в /sexchange", callback_data="sexch_refresh")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад в /sexchange'), callback_data="sexch_refresh")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18477,18 +17859,17 @@ async def cb_sexch_set_range(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "sexch_set_interval"))
+@_localized
 async def cb_sexch_set_interval(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     admin_sexchange_state[callback.from_user.id] = "set_interval"
     await callback.answer()
     text = (
-        '⏱ <b>ИЗМЕНИТЬ ИНТЕРВАЛ СМЕНЫ КУРСА</b>\n'
-        '<code>································</code>\n'
-        '<i>Напишите интервал в минутах (например: <b>150</b> для 2ч 30мин):</i>'
+        _l('⏱ <b>ИЗМЕНИТЬ ИНТЕРВАЛ СМЕНЫ КУРСА</b>\n<code>································</code>\n<i>Напишите интервал в минутах (например: <b>150</b> для 2ч 30мин):</i>')
     )
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="Назад в /sexchange", callback_data="sexch_refresh")]]
+        inline_keyboard=[[InlineKeyboardButton(text=_l('Назад в /sexchange'), callback_data="sexch_refresh")]]
     )
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -18501,53 +17882,57 @@ async def cb_sexch_set_interval(callback: types.CallbackQuery):
     message.from_user.id in admin_sexchange_state or
     message.from_user.id in p2p_user_action or
     (message.reply_to_message and (
-        "КУПИТЬ MPOINT" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ПРОДАТЬ MPOINT" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "Сколько mCoin пополняем?" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "Сколько MPOINT пополняем?" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ПОПОЛНЕНИЕ mCoin" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ПОПОЛНЕНИЕ MPOINT" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ВЫВОД mCoin" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ВЫВОД MPOINT" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "Сколько mCoin выводим?" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "Сколько MPOINT выводим?" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ИЗМЕНИТЬ КУРС ПРОДАЖИ" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
-        "ИЗМЕНИТЬ КУРС ПОКУПКИ" in (message.reply_to_message.text or message.reply_to_message.caption or "")
+        _p2p_reply_action(message.reply_to_message) is not None or
+        "КУПИТЬ MPOINT" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ПРОДАТЬ MPOINT" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "Сколько mCoin пополняем?" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "Сколько MPOINT пополняем?" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ПОПОЛНЕНИЕ mCoin" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ПОПОЛНЕНИЕ MPOINT" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ВЫВОД mCoin" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ВЫВОД MPOINT" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "Сколько mCoin выводим?" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "Сколько MPOINT выводим?" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ИЗМЕНИТЬ КУРС ПРОДАЖИ" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") or
+        "ИЗМЕНИТЬ КУРС ПОКУПКИ" in (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "")
     ))
 )))
+@_localized
 async def process_p2p_and_admin_reply_message(message: types.Message):
     if message.chat.type != "private":
         return
     user_id = message.from_user.id
     raw_text = message.text.strip()
-    rep_text = (message.reply_to_message.text or message.reply_to_message.caption or "") if message.reply_to_message else ""
-    user_action = p2p_user_action.get(user_id)
+    rep_text = (_canonical_prompt(message.reply_to_message.text or "") or _canonical_prompt(message.reply_to_message.caption or "") or "") if message.reply_to_message else ""
+    user_action = _p2p_reply_action(message.reply_to_message) or p2p_user_action.get(user_id)
     admin_action = admin_sexchange_state.get(user_id)
+    if user_action:
+        rep_text = ""
 
     if admin_action and user_id in ADMINS:
         if admin_action == "set_sell_rate":
             val = parse_amount(raw_text)
             if val is None or val <= 0:
-                await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_l('<i>Курс должен быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
                 return
             cursor.execute("UPDATE p2p_settings SET official_sell_rate = ? WHERE id = 1", (val,))
             conn.commit()
             admin_sexchange_state.pop(user_id, None)
-            succ_text = f"✅ <i>Официальный курс продажи установлен: <b>1 MP = {format_number(val)} mCoin</b></i>"
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В меню /sexchange", callback_data="sexch_refresh")]])
+            succ_text = _lf('✅ <i>Официальный курс продажи установлен: <b>1 MP = {0} mCoin</b></i>', (_fmt(format_number(val), '', -1),))
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
             await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
             return
 
         if admin_action == "set_buy_rate":
             val = parse_amount(raw_text)
             if val is None or val <= 0:
-                await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_l('<i>Курс должен быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
                 return
             cursor.execute("UPDATE p2p_settings SET official_buy_rate = ? WHERE id = 1", (val,))
             conn.commit()
             admin_sexchange_state.pop(user_id, None)
-            succ_text = f"✅ <i>Официальный курс покупки установлен: <b>1 MP = {format_number(val)} mCoin</b></i>"
-            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В меню /sexchange", callback_data="sexch_refresh")]])
+            succ_text = _lf('✅ <i>Официальный курс покупки установлен: <b>1 MP = {0} mCoin</b></i>', (_fmt(format_number(val), '', -1),))
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
             await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
             return
 
@@ -18561,11 +17946,11 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                     cursor.execute("UPDATE p2p_settings SET rate_min = ?, rate_max = ? WHERE id = 1", (r_min, r_max))
                     conn.commit()
                     admin_sexchange_state.pop(user_id, None)
-                    succ_text = f"✅ <i>Диапазон скачков курса успешно установлен: <b>{format_number(r_min)} — {format_number(r_max)} mCoin</b></i>"
-                    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В меню /sexchange", callback_data="sexch_refresh")]])
+                    succ_text = _lf('✅ <i>Диапазон скачков курса успешно установлен: <b>{0} — {1} mCoin</b></i>', (_fmt(format_number(r_min), '', -1), _fmt(format_number(r_max), '', -1)))
+                    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
                     await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
                     return
-            await message.reply("<i>Введите диапазон в формате: <b>7000-29000</b> или <b>7.000-29.000</b> (мин < макс)!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Введите диапазон в формате: <b>7000-29000</b> или <b>7.000-29.000</b> (мин &lt; макс)!</i>'), parse_mode=ParseMode.HTML)
             return
 
         if admin_action == "set_interval":
@@ -18576,133 +17961,117 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                 cursor.execute("UPDATE p2p_settings SET interval_minutes = ? WHERE id = 1", (mins,))
                 conn.commit()
                 admin_sexchange_state.pop(user_id, None)
-                succ_text = f"✅ <i>Интервал смены курса установлен: <b>{mins} мин. ({mins // 60}ч {mins % 60}м)</b></i>"
-                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="В меню /sexchange", callback_data="sexch_refresh")]])
+                succ_text = _lf('✅ <i>Интервал смены курса установлен: <b>{0} мин. ({1}ч {2}м)</b></i>', (_fmt(mins, '', -1), _fmt(mins // 60, '', -1), _fmt(mins % 60, '', -1)))
+                kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
                 await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
                 return
             except Exception:
-                await message.reply("<i>Интервал должен быть положительным числом минут (например: 150)!</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_l('<i>Интервал должен быть положительным числом минут (например: 150)!</i>'), parse_mode=ParseMode.HTML)
                 return
 
     raw_amount = parse_amount(raw_text)
 
     if user_action == "set_sell_price" or "ИЗМЕНИТЬ КУРС ПРОДАЖИ" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Курс должен быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         cursor.execute("UPDATE p2p_accounts SET sell_price = ? WHERE user_id = ?", (raw_amount, user_id))
         conn.commit()
-        succ_text = f"✅ <i>Курс продажи успешно установлен: <b>1 MP = {format_number(raw_amount)} mCoin</b></i>"
+        succ_text = _lf('✅ <i>Курс продажи успешно установлен: <b>1 MP = {0} mCoin</b></i>', (_fmt(format_number(raw_amount), '', -1),))
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     if user_action == "set_buy_price" or "ИЗМЕНИТЬ КУРС ПОКУПКИ" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Курс должен быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         cursor.execute("UPDATE p2p_accounts SET buy_price = ? WHERE user_id = ?", (raw_amount, user_id))
         conn.commit()
-        succ_text = f"✅ <i>Курс покупки успешно установлен: <b>{format_number(raw_amount)} mCoin = 1 MP</b></i>"
+        succ_text = _lf('✅ <i>Курс покупки успешно установлен: <b>{0} mCoin = 1 MP</b></i>', (_fmt(format_number(raw_amount), '', -1),))
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     if user_action == "dep_mcoin" or "ПОПОЛНЕНИЕ mCoin" in rep_text or "Сколько mCoin пополняем?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Сумма должна быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         ok, res = deposit_to_p2p_mcoin(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
-        comm_str = "<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>" if res["is_first"] else f"<blockquote><b>🔘 Комиссия: 1,5% ({format_number(res['fee'])} mCoin)</b></blockquote>"
+        comm_str = _l('<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>') if res["is_first"] else _lf('<blockquote><b>🔘 Комиссия: 1,5% ({0} mCoin)</b></blockquote>', (_fmt(format_number(res['fee']), '', -1),))
         succ_text = (
-            '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
-            '<code>·····················</code>\n'
-            f'{user_link}, твои <b>{format_number(raw_amount)} mCoin</b> зачислены на баланс обменника.\n'
-            f'{comm_str}\n'
-            f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>\n'
-            f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+            _lf('✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n<code>·····················</code>\n{0}, твои <b>{1} mCoin</b> зачислены на баланс обменника.\n{2}\n<blockquote>💰 mCoin (обменник): <b>{3}</b></blockquote>\n<blockquote>💎 MPOINT (обменник): <b>{4}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(comm_str, '', -1), _fmt(format_number(res['mcoin_balance']), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     if user_action == "dep_mpoint" or "ПОПОЛНЕНИЕ MPOINT" in rep_text or "Сколько MPOINT пополняем?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Сумма должна быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         ok, res = deposit_to_p2p_mpoint(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
-            '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
-            '<code>·····················</code>\n'
-            f'{user_link}, твои <b>{format_number(raw_amount)} MPOINT</b> зачислены на баланс обменника.\n'
-            '<blockquote><b>🆓 Комиссия не списана</b></blockquote>\n'
-            f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>\n'
-            f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+            _lf('✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n<code>·····················</code>\n{0}, твои <b>{1} MPOINT</b> зачислены на баланс обменника.\n<blockquote><b>🆓 Комиссия не списана</b></blockquote>\n<blockquote>💰 mCoin (обменник): <b>{2}</b></blockquote>\n<blockquote>💎 MPOINT (обменник): <b>{3}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(res['mcoin_balance']), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     if user_action == "wth_mcoin" or "ВЫВОД mCoin" in rep_text or "Сколько mCoin выводим?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Сумма должна быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         ok, res = withdraw_from_p2p_mcoin(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
-            '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
-            '<code>·····················</code>\n'
-            f'{user_link}, твои <b>{format_number(raw_amount)} mCoin</b> выведены на основной баланс.\n'
-            f'<blockquote>💰 mCoin (обменник): <b>{format_number(res["mcoin_balance"])}</b></blockquote>'
+            _lf('✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n<code>·····················</code>\n{0}, твои <b>{1} mCoin</b> выведены на основной баланс.\n<blockquote>💰 mCoin (обменник): <b>{2}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(res['mcoin_balance']), '', -1)))
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
     if user_action == "wth_mpoint" or "ВЫВОД MPOINT" in rep_text or "Сколько MPOINT выводим?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
-            await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Сумма должна быть положительным числом!</i>'), parse_mode=ParseMode.HTML)
             return
         p2p_user_action.pop(user_id, None)
         ok, res = withdraw_from_p2p_mpoint(user_id, raw_amount)
         if not ok:
-            await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Ошибка: {0}</i>', (_fmt(res, '', -1),)), parse_mode=ParseMode.HTML)
             return
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
-            '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
-            '<code>·····················</code>\n'
-            f'{user_link}, твои <b>{format_number(raw_amount)} MPOINT</b> выведены на основной баланс.\n'
-            f'<blockquote>💎 MPOINT (обменник): <b>{format_number(res["mp_balance"])}</b></blockquote>'
+            _lf('✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n<code>·····················</code>\n{0}, твои <b>{1} MPOINT</b> выведены на основной баланс.\n<blockquote>💎 MPOINT (обменник): <b>{2}</b></blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(res['mp_balance']), '', -1)))
         )
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[[InlineKeyboardButton(text="Управление обменом", callback_data="p2p_manage", style="primary")]]
+            inline_keyboard=[[InlineKeyboardButton(text=_l('Управление обменом'), callback_data="p2p_manage", style="primary")]]
         )
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
@@ -18720,25 +18089,21 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
 
         if user_u["balance"] < total_cost:
             shortage = total_cost - user_u["balance"]
-            err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} mCoin!</b></i>"
+            err_text = _lf('🚫 <i>{0}, не хватает <b>{1} mCoin!</b></i>', (_fmt(user_link, '', -1), _fmt(format_number(shortage), '', -1)))
             err_kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
+                inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_buy_bot", icon_custom_emoji_id="5255703720078879038")]]
             )
             await message.reply(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
             return
 
         conf_text = (
-            '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ ПОКУПКИ</b>\n'
-            '<code>·····················</code>\n'
-            f'<i>{user_link}, ты точно <b>хочешь купить {format_number(raw_amount)} MPOINT</b> за <b>{format_number(total_cost)} mCoin?</b></i>\n'
-            f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {format_number(buy_rate)} mCoin</blockquote>\n'
-            '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+            _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ ПОКУПКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь купить {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(total_cost), '', -1), _fmt(format_number(buy_rate), '', -1)))
         )
         conf_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_bbot_{raw_amount}", style="success"),
-                    InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                    InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_bbot_{raw_amount}", style="success"),
+                    InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
                 ]
             ]
         )
@@ -18764,25 +18129,21 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         total_cost = raw_amount * seller_p2p["sell_price"]
         if buyer_u["balance"] < total_cost:
             shortage = total_cost - buyer_u["balance"]
-            err_text = f"🚫 <i>{buyer_link}, не хватает <b>{format_number(shortage)} mCoin!</b></i>"
+            err_text = _lf('🚫 <i>{0}, не хватает <b>{1} mCoin!</b></i>', (_fmt(buyer_link, '', -1), _fmt(format_number(shortage), '', -1)))
             err_kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data=f"p2p_buy_seller_{seller_id}", icon_custom_emoji_id="5255703720078879038")]]
+                inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data=f"p2p_buy_seller_{seller_id}", icon_custom_emoji_id="5255703720078879038")]]
             )
             await message.reply(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
             return
 
         conf_text = (
-            '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-            '<code>·····················</code>\n'
-            f'<i>{buyer_link}, ты точно <b>хочешь купить {format_number(raw_amount)} MPOINT</b> за <b>{format_number(total_cost)} mCoin?</b></i>\n'
-            f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(seller_p2p["sell_price"])} mCoin</blockquote>\n'
-            '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+            _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь купить {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(buyer_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(total_cost), '', -1), _fmt(format_number(seller_p2p['sell_price']), '', -1)))
         )
         conf_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_buy_{seller_id}_{raw_amount}", style="success"),
-                    InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                    InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_buy_{seller_id}_{raw_amount}", style="success"),
+                    InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
                 ]
             ]
         )
@@ -18800,26 +18161,22 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         if user_u.get("mp_balance", 0) < raw_amount:
             shortage = raw_amount - user_u.get("mp_balance", 0)
-            err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} MP!</b></i>"
+            err_text = _lf('🚫 <i>{0}, не хватает <b>{1} MP!</b></i>', (_fmt(user_link, '', -1), _fmt(format_number(shortage), '', -1)))
             err_kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data="p2p_sell_bot", icon_custom_emoji_id="5255703720078879038")]]
+                inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data="p2p_sell_bot", icon_custom_emoji_id="5255703720078879038")]]
             )
             await message.reply(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
             return
 
         total_mcoin = raw_amount * sell_rate
         conf_text = (
-            '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-            '<code>·····················</code>\n'
-            f'<i>{user_link}, ты точно <b>хочешь продать {format_number(raw_amount)} MPOINT</b> за <b>{format_number(total_mcoin)} mCoin?</b></i>\n'
-            f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {format_number(sell_rate)} mCoin</blockquote>\n'
-            '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+            _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь продать {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Оф. курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(total_mcoin), '', -1), _fmt(format_number(sell_rate), '', -1)))
         )
         conf_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_sbot_{raw_amount}", style="success"),
-                    InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                    InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_sbot_{raw_amount}", style="success"),
+                    InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
                 ]
             ]
         )
@@ -18844,26 +18201,22 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
 
         if seller_u.get("mp_balance", 0) < raw_amount:
             shortage = raw_amount - seller_u.get("mp_balance", 0)
-            err_text = f"🚫 <i>{seller_link}, не хватает <b>{format_number(shortage)} MP!</b></i>"
+            err_text = _lf('🚫 <i>{0}, не хватает <b>{1} MP!</b></i>', (_fmt(seller_link, '', -1), _fmt(format_number(shortage), '', -1)))
             err_kb = InlineKeyboardMarkup(
-                inline_keyboard=[[InlineKeyboardButton(text="Назад", callback_data=f"p2p_sell_buyer_{buyer_id}", icon_custom_emoji_id="5255703720078879038")]]
+                inline_keyboard=[[InlineKeyboardButton(text=_l('Назад'), callback_data=f"p2p_sell_buyer_{buyer_id}", icon_custom_emoji_id="5255703720078879038")]]
             )
             await message.reply(err_text, reply_markup=err_kb, parse_mode=ParseMode.HTML)
             return
 
         total_mcoin = raw_amount * buyer_p2p["buy_price"]
         conf_text = (
-            '<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n'
-            '<code>·····················</code>\n'
-            f'<i>{seller_link}, ты точно <b>хочешь продать {format_number(raw_amount)} MPOINT</b> за <b>{format_number(total_mcoin)} mCoin?</b></i>\n'
-            f'<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {format_number(buyer_p2p["buy_price"])} mCoin</blockquote>\n'
-            '<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>'
+            _lf('<tg-emoji emoji-id="5452069934089641166">❓</tg-emoji> <b>ПОДТВЕРЖДЕНИЕ СДЕЛКИ</b>\n<code>·····················</code>\n<i>{0}, ты точно <b>хочешь продать {1} MPOINT</b> за <b>{2} mCoin?</b></i>\n<blockquote><tg-emoji emoji-id="5402186569006210455">💱</tg-emoji> Курс: {3} mCoin</blockquote>\n<blockquote>🔘 Комиссия: 0% = 0 mCoin</blockquote>', (_fmt(seller_link, '', -1), _fmt(format_number(raw_amount), '', -1), _fmt(format_number(total_mcoin), '', -1), _fmt(format_number(buyer_p2p['buy_price']), '', -1)))
         )
         conf_kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Да ✅", callback_data=f"p2p_conf_sbuy_{buyer_id}_{raw_amount}", style="success"),
-                    InlineKeyboardButton(text="Отмена 💢", callback_data="p2p_cancel_buy", style="danger")
+                    InlineKeyboardButton(text=_l('Да ✅'), callback_data=f"p2p_conf_sbuy_{buyer_id}_{raw_amount}", style="success"),
+                    InlineKeyboardButton(text=_l('Отмена 💢'), callback_data="p2p_cancel_buy", style="danger")
                 ]
             ]
         )
@@ -19009,22 +18362,22 @@ async def resolve_temple_target(message: types.Message, raw_target: str) -> Opti
         return None
 
 
+@_localized
 async def show_temple_target_selected(event, sender_id: int, sender_name: str, target_id: int, edit: bool = False):
     sender_link = get_user_mention(sender_id, sender_name)
     target_link = get_user_mention(target_id)
     if sender_id == target_id:
-        target_str = "<b>самого себя</b>"
+        target_str = _l('<b>самого себя</b>')
     else:
         target_str = target_link
     text = (
-        f'{sender_link}\n'
-        f'<tg-emoji emoji-id="5472096095280569232">🎁</tg-emoji> Получатель {target_str} успешно выбран!'
+        _lf('{0}\n<tg-emoji emoji-id="5472096095280569232">🎁</tg-emoji> Получатель {1} успешно выбран!', (_fmt(sender_link, '', -1), _fmt(target_str, '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Отправить подарок",
+                    text=_l('Отправить подарок'),
                     callback_data=f"temple_gifts_{target_id}",
                     style="success",
                     icon_custom_emoji_id="5846184826184408721"
@@ -19032,7 +18385,7 @@ async def show_temple_target_selected(event, sender_id: int, sender_name: str, t
             ],
             [
                 InlineKeyboardButton(
-                    text="Сменить получателя",
+                    text=_l('Сменить получателя'),
                     callback_data="temple_change_target",
                     style="danger",
                     icon_custom_emoji_id="5264727218734524899"
@@ -19055,6 +18408,7 @@ async def show_temple_target_selected(event, sender_id: int, sender_name: str, t
 
 @dp.message(Command("temple", "храм"))
 @dp.message(_inline_filter(lambda message: message.text and re.match(r'^[!/.]?(храм|temple)(\s+|$)', message.text, re.IGNORECASE)))
+@_localized
 async def cmd_temple(message: types.Message):
     user_id = message.from_user.id
     raw_text = message.text.strip()
@@ -19064,23 +18418,20 @@ async def cmd_temple(message: types.Message):
         arg = parts[1].strip() if len(parts) > 1 else ""
         target_id = await resolve_temple_target(message, arg)
         if not target_id:
-            await message.reply("<i>Пользователь не найден! Укажите корректный @username или ID.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Пользователь не найден! Укажите корректный @username или ID.</i>'), parse_mode=ParseMode.HTML)
             return
         _temple_user_target[user_id] = target_id
         await show_temple_target_selected(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), target_id)
         return
 
     text = (
-        '[NEW] <tg-emoji emoji-id="5834781387365818180">🎁</tg-emoji><b> Подарочный храм</b>\n\n'
-        '<tg-emoji emoji-id="5942877472163892475">👥</tg-emoji> В подарочном храме ты сможешь:\n'
-        '<i>Отправлять подарки своим друзьям.\n'
-        'Разыгрывать подарки среди игроков.</i>'
+        _l('[NEW] <tg-emoji emoji-id="5834781387365818180">🎁</tg-emoji><b> Подарочный храм</b>\n\n<tg-emoji emoji-id="5942877472163892475">👥</tg-emoji> В подарочном храме ты сможешь:\n<i>Отправлять подарки своим друзьям.\nРазыгрывать подарки среди игроков.</i>')
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Войти",
+                    text=_l('Войти'),
                     callback_data="temple_enter",
                     style="success",
                     icon_custom_emoji_id="5258084656674250503"
@@ -19092,6 +18443,7 @@ async def cmd_temple(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "temple_enter"))
+@_localized
 async def cb_temple_enter(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
@@ -19110,18 +18462,13 @@ async def cb_temple_enter(callback: types.CallbackQuery):
 
     stats = get_temple_stats(user_id)
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5951637899777677904">👋</tg-emoji> Добро пожаловать в подарочный храм!\n\n'
-        f'<tg-emoji emoji-id="5422360266618707867">📊</tg-emoji> Твоя статистика\n'
-        f'<blockquote> <tg-emoji emoji-id="5357134848857241750">⬜️</tg-emoji>Отправлено подарков: {stats["gifts_sent"]}</blockquote>\n'
-        f'<blockquote><tg-emoji emoji-id="5463289097336405244">⭐️</tg-emoji>Потрачено звезд: {stats["stars_spent"]}</blockquote>\n\n'
-        f'<b>Для того чтобы отправить подарок пользователю введи команда <code>храм &lt;username/id&gt;</code></b>'
+        _lf('{0}\n<tg-emoji emoji-id="5951637899777677904">👋</tg-emoji> Добро пожаловать в подарочный храм!\n\n<tg-emoji emoji-id="5422360266618707867">📊</tg-emoji> Твоя статистика\n<blockquote> <tg-emoji emoji-id="5357134848857241750">⬜️</tg-emoji>Отправлено подарков: {1}</blockquote>\n<blockquote><tg-emoji emoji-id="5463289097336405244">⭐️</tg-emoji>Потрачено звезд: {2}</blockquote>\n\n<b>Для того чтобы отправить подарок пользователю введи команда <code>храм &lt;username/id&gt;</code></b>', (_fmt(user_link, '', -1), _fmt(stats['gifts_sent'], '', -1), _fmt(stats['stars_spent'], '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="🎁 Подарить себе",
+                    text=_l('🎁 Подарить себе'),
                     callback_data=f"temple_gifts_{user_id}",
                     style="success"
                 )
@@ -19132,14 +18479,14 @@ async def cb_temple_enter(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "temple_change_target"))
+@_localized
 async def cb_temple_change_target(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     _temple_waiting_target.add(user_id)
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5472096095280569232">🎁</tg-emoji> Отправьте @username или ID получателя (или введите <code>храм &lt;username/id&gt;</code>):'
+        _lf('{0}\n<tg-emoji emoji-id="5472096095280569232">🎁</tg-emoji> Отправьте @username или ID получателя (или введите <code>храм &lt;username/id&gt;</code>):', (_fmt(user_link, '', -1),))
     )
     try:
         await callback.message.edit_text(text, parse_mode=ParseMode.HTML)
@@ -19148,6 +18495,7 @@ async def cb_temple_change_target(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_back_target_")))
+@_localized
 async def cb_temple_back_target(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_back_target_", ""))
@@ -19156,16 +18504,16 @@ async def cb_temple_back_target(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_gifts_")))
+@_localized
 async def cb_temple_gifts(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_gifts_", ""))
     user_id = callback.from_user.id
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
-    target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
+    target_link = _l('самому себе') if target_id == user_id else get_user_mention(target_id)
     
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5474371208176737086">✉️</tg-emoji> Выберите подарок которой вы хотите подарить {target_link}'
+        _lf('{0}\n<tg-emoji emoji-id="5474371208176737086">✉️</tg-emoji> Выберите подарок которой вы хотите подарить {1}', (_fmt(user_link, '', -1), _fmt(target_link, '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -19180,7 +18528,7 @@ async def cb_temple_gifts(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="💍", callback_data=f"temple_sel_{target_id}_ring"),
             ],
             [
-                InlineKeyboardButton(text="« Назад", callback_data=f"temple_back_target_{target_id}")
+                InlineKeyboardButton(text=_l('« Назад'), callback_data=f"temple_back_target_{target_id}")
             ]
         ]
     )
@@ -19191,6 +18539,7 @@ async def cb_temple_gifts(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_sel_")))
+@_localized
 async def cb_temple_select_gift(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_sel_", "").split("_")
@@ -19200,25 +18549,22 @@ async def cb_temple_select_gift(callback: types.CallbackQuery):
     
     gift = TEMPLE_GIFTS.get(gift_key, TEMPLE_GIFTS["heart"])
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
-    target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
+    target_link = _l('самому себе') if target_id == user_id else get_user_mention(target_id)
     
     comment = _temple_user_comment.get(user_id, "")
-    comment_block = f'\n<blockquote>💬 <b>Комментарий:</b> <i>{html.escape(comment)}</i></blockquote>\n' if comment else '\n'
+    comment_block = _lf('\n<blockquote>💬 <b>Комментарий:</b> <i>{0}</i></blockquote>\n', (_fmt(html.escape(comment), '', -1),)) if comment else '\n'
 
     text = (
-        f'{user_link}\n'
-        f'<tg-emoji emoji-id="5472248119942979457">🤔</tg-emoji> Вы хотите отправить подарок <b>{gift["emoji"]} {gift["name"]} ({gift["stars"]}⭐️)</b> пользователю {target_link}?\n'
-        f'{comment_block}\n'
-        f'<blockquote><i>Если хотите добавить комментарий к подарку, то нажмите кнопку ниже, если хотите без комментария просто проигнорируйте данное сообщение</i></blockquote>'
+        _lf('{0}\n<tg-emoji emoji-id="5472248119942979457">🤔</tg-emoji> Вы хотите отправить подарок <b>{1} {2} ({3}⭐️)</b> пользователю {4}?\n{5}\n<blockquote><i>Если хотите добавить комментарий к подарку, то нажмите кнопку ниже, если хотите без комментария просто проигнорируйте данное сообщение</i></blockquote>', (_fmt(user_link, '', -1), _fmt(gift['emoji'], '', -1), _fmt(_label(gift['name']), '', -1), _fmt(gift['stars'], '', -1), _fmt(target_link, '', -1), _fmt(comment_block, '', -1)))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="Отправить", callback_data=f"temple_pay_{target_id}_{gift_key}", style="primary"),
-                InlineKeyboardButton(text="Добавить комментарий" if not comment else "Изменить комментарий", callback_data=f"temple_com_{target_id}_{gift_key}", style="primary")
+                InlineKeyboardButton(text=_l('Отправить'), callback_data=f"temple_pay_{target_id}_{gift_key}", style="primary"),
+                InlineKeyboardButton(text=_l('Добавить комментарий') if not comment else _l('Изменить комментарий'), callback_data=f"temple_com_{target_id}_{gift_key}", style="primary")
             ],
             [
-                InlineKeyboardButton(text="« Назад", callback_data=f"temple_gifts_{target_id}")
+                InlineKeyboardButton(text=_l('« Назад'), callback_data=f"temple_gifts_{target_id}")
             ]
         ]
     )
@@ -19229,6 +18575,7 @@ async def cb_temple_select_gift(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_com_")))
+@_localized
 async def cb_temple_add_comment(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_com_", "").split("_")
@@ -19239,13 +18586,13 @@ async def cb_temple_add_comment(callback: types.CallbackQuery):
     _temple_waiting_comment[user_id] = (target_id, gift_key)
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
-        f'{user_link}\n'
-        f'✍️ <b>Напишите комментарий к подарку в чат:</b>'
+        _lf('{0}\n✍️ <b>Напишите комментарий к подарку в чат:</b>', (_fmt(user_link, '', -1),))
     )
     await callback.message.answer(text, parse_mode=ParseMode.HTML)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data.startswith("temple_pay_")))
+@_localized
 async def cb_temple_pay(callback: types.CallbackQuery):
     await callback.answer()
     parts = callback.data.replace("temple_pay_", "").split("_")
@@ -19254,11 +18601,11 @@ async def cb_temple_pay(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
     gift = TEMPLE_GIFTS.get(gift_key, TEMPLE_GIFTS["heart"])
-    target_name = "себе" if target_id == user_id else get_user_display_name(target_id)
+    target_name = _l('себе') if target_id == user_id else get_user_display_name(target_id)
     
     payload = f"temple_gift_{user_id}_{target_id}_{gift_key}_{secrets.token_hex(4)}"
-    title = f"Подарок {gift['emoji']} {gift['name']}"
-    description = f"Оплата подарка {gift['name']} пользователю {target_name}"
+    title = _lf('Подарок {0} {1}', (_fmt(gift['emoji'], '', -1), _fmt(_label(gift['name']), '', -1)))
+    description = _lf('Оплата подарка {0} пользователю {1}', (_fmt(_label(gift['name']), '', -1), _fmt(target_name, '', -1)))
     
     try:
         await callback.message.answer_invoice(
@@ -19266,11 +18613,11 @@ async def cb_temple_pay(callback: types.CallbackQuery):
             description=description,
             payload=payload,
             currency="XTR",
-            prices=[types.LabeledPrice(label=f"{gift['emoji']} {gift['name']}", amount=gift["stars"])],
+            prices=[types.LabeledPrice(label=_lf('{0} {1}', (_fmt(gift['emoji'], '', -1), _fmt(_label(gift['name']), '', -1))), amount=gift["stars"])],
             provider_token=""
         )
     except Exception as e:
-        await callback.answer(f"Ошибка создания счета: {e}", show_alert=True)
+        await callback.answer(_lf('Ошибка создания счета: {0}', (_fmt(e, '', -1),)), show_alert=True)
 
 
 @dp.pre_checkout_query(_inline_filter(lambda q: q.invoice_payload and q.invoice_payload.startswith("temple_gift_")))
@@ -19279,6 +18626,7 @@ async def cb_temple_pre_checkout(pre_checkout_query: types.PreCheckoutQuery):
 
 
 @dp.message(_inline_filter(lambda m: m.successful_payment and m.successful_payment.invoice_payload and m.successful_payment.invoice_payload.startswith("temple_gift_")))
+@_localized
 async def cb_temple_successful_payment(message: types.Message):
     payload = message.successful_payment.invoice_payload
     parts = payload.split("_")
@@ -19297,15 +18645,14 @@ async def cb_temple_successful_payment(message: types.Message):
     
     sender_link = get_user_mention(sender_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     succ_text = (
-        f'{sender_link}\n'
-        f'<tg-emoji emoji-id="5472180551517477902">✅</tg-emoji> Ваша заявка обрабатывается!'
+        _lf('{0}\n<tg-emoji emoji-id="5472180551517477902">✅</tg-emoji> Ваша заявка обрабатывается!', (_fmt(sender_link, '', -1),))
     )
     await message.answer(succ_text, parse_mode=ParseMode.HTML)
     
     if sender_id == target_id:
         try:
             self_notify = (
-                f'🎉 <b>Вы успешно подарили себе подарок {gift["emoji"]} {gift["name"]}!</b>\n'
+                _lf('🎉 <b>Вы успешно подарили себе подарок {0} {1}!</b>\n', (_fmt(gift['emoji'], '', -1), _fmt(_label(gift['name']), '', -1)))
             )
             if comment:
                 self_notify += f'💬 <i>«{html.escape(comment)}»</i>'
@@ -19315,8 +18662,7 @@ async def cb_temple_successful_payment(message: types.Message):
     else:
         try:
             target_notify = (
-                f'🎉 <b>Вам пришёл подарок {gift["emoji"]} {gift["name"]}!</b>\n'
-                f'👤 От: {sender_link}\n'
+                _lf('🎉 <b>Вам пришёл подарок {0} {1}!</b>\n👤 От: {2}\n', (_fmt(gift['emoji'], '', -1), _fmt(_label(gift['name'], user_id=target_id), '', -1), _fmt(sender_link, '', -1)), user_id=target_id)
             )
             if comment:
                 target_notify += f'💬 <i>«{html.escape(comment)}»</i>'
@@ -19329,6 +18675,7 @@ async def cb_temple_successful_payment(message: types.Message):
     message.from_user.id in _temple_waiting_comment or
     message.from_user.id in _temple_waiting_target
 )))
+@_localized
 async def process_temple_text_input(message: types.Message):
     user_id = message.from_user.id
     raw_text = message.text.strip()
@@ -19343,21 +18690,18 @@ async def process_temple_text_input(message: types.Message):
         _temple_user_comment[user_id] = raw_text
         gift = TEMPLE_GIFTS.get(gift_key, TEMPLE_GIFTS["heart"])
         user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
-        target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
+        target_link = _l('самому себе') if target_id == user_id else get_user_mention(target_id)
         text = (
-            f'{user_link}\n'
-            f'<tg-emoji emoji-id="5472248119942979457">🤔</tg-emoji> Вы хотите отправить подарок <b>{gift["emoji"]} {gift["name"]} ({gift["stars"]}⭐️)</b> пользователю {target_link}?\n\n'
-            f'<blockquote>💬 <b>Комментарий:</b> <i>{html.escape(raw_text)}</i></blockquote>\n\n'
-            f'<blockquote><i>Если хотите изменить комментарий, нажмите кнопку ниже</i></blockquote>'
+            _lf('{0}\n<tg-emoji emoji-id="5472248119942979457">🤔</tg-emoji> Вы хотите отправить подарок <b>{1} {2} ({3}⭐️)</b> пользователю {4}?\n\n<blockquote>💬 <b>Комментарий:</b> <i>{5}</i></blockquote>\n\n<blockquote><i>Если хотите изменить комментарий, нажмите кнопку ниже</i></blockquote>', (_fmt(user_link, '', -1), _fmt(gift['emoji'], '', -1), _fmt(_label(gift['name']), '', -1), _fmt(gift['stars'], '', -1), _fmt(target_link, '', -1), _fmt(html.escape(raw_text), '', -1)))
         )
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
-                    InlineKeyboardButton(text="Отправить", callback_data=f"temple_pay_{target_id}_{gift_key}", style="primary"),
-                    InlineKeyboardButton(text="Изменить комментарий", callback_data=f"temple_com_{target_id}_{gift_key}", style="primary")
+                    InlineKeyboardButton(text=_l('Отправить'), callback_data=f"temple_pay_{target_id}_{gift_key}", style="primary"),
+                    InlineKeyboardButton(text=_l('Изменить комментарий'), callback_data=f"temple_com_{target_id}_{gift_key}", style="primary")
                 ],
                 [
-                    InlineKeyboardButton(text="« Назад", callback_data=f"temple_gifts_{target_id}")
+                    InlineKeyboardButton(text=_l('« Назад'), callback_data=f"temple_gifts_{target_id}")
                 ]
             ]
         )
@@ -19372,7 +18716,7 @@ async def process_temple_text_input(message: types.Message):
         
         target_user = await resolve_temple_target(message, lookup_target)
         if not target_user:
-            await message.reply("<i>Пользователь не найден! Укажите корректный @username или ID.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Пользователь не найден! Укажите корректный @username или ID.</i>'), parse_mode=ParseMode.HTML)
             return
         _temple_user_target[user_id] = target_user
         await show_temple_target_selected(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), target_user)
@@ -19380,6 +18724,7 @@ async def process_temple_text_input(message: types.Message):
 
 
 
+@_localized
 async def check_time_deposits_task():
     while True:
         try:
@@ -19407,11 +18752,7 @@ async def check_time_deposits_task():
                             try:
                                 u_data = get_user(uid)
                                 msg_text = (
-                                    f'🏦 <b>Депозит завершен!</b>\n'
-                                    f'<code>·····················</code>\n'
-                                    f'Срок депозита на {days}д. подошел к концу.\n'
-                                    f'💰 Выплата: <b>+{format_number(payout)} m¢</b> (прибыль: <b>+{format_number(profit)} m¢</b>)\n'
-                                    f'<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{format_number(u_data["balance"])} m¢</b>'
+                                    _lf('🏦 <b>Депозит завершен!</b>\n<code>·····················</code>\nСрок депозита на {0}д. подошел к концу.\n💰 Выплата: <b>+{1} m¢</b> (прибыль: <b>+{2} m¢</b>)\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> Баланс: <b>{3} m¢</b>', (_fmt(days, '', -1), _fmt(format_number(payout), '', -1), _fmt(format_number(profit), '', -1), _fmt(format_number(u_data['balance']), '', -1)), user_id=uid)
                                 )
                                 await bot.send_message(chat_id=uid, text=msg_text, parse_mode=ParseMode.HTML)
                             except Exception:
@@ -19473,12 +18814,13 @@ async def p2p_rate_updater_task():
 promote_user_states = {}
 
 
+@_localized
 def get_promote_main_markup():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
-                    text="Продвигать канал",
+                    text=_l('Продвигать канал'),
                     callback_data="promote_type_channel",
                     style="primary",
                     icon_custom_emoji_id="5469903029144657419"
@@ -19486,7 +18828,7 @@ def get_promote_main_markup():
             ],
             [
                 InlineKeyboardButton(
-                    text="Продвигать чат/группу",
+                    text=_l('Продвигать чат/группу'),
                     callback_data="promote_type_chat",
                     style="primary",
                     icon_custom_emoji_id="5465300082628763143"
@@ -19494,13 +18836,13 @@ def get_promote_main_markup():
             ],
             [
                 InlineKeyboardButton(
-                    text="Активные",
+                    text=_l('Активные'),
                     callback_data="promote_active",
                     style="success",
                     icon_custom_emoji_id="5809949600152296075"
                 ),
                 InlineKeyboardButton(
-                    text="Завершенные",
+                    text=_l('Завершенные'),
                     callback_data="promote_completed",
                     style="danger",
                     icon_custom_emoji_id="5953810354365538566"
@@ -19508,7 +18850,7 @@ def get_promote_main_markup():
             ],
             [
                 InlineKeyboardButton(
-                    text="Правила",
+                    text=_l('Правила'),
                     callback_data="promote_rules",
                     style="danger",
                     icon_custom_emoji_id="5222444124698853913"
@@ -19518,17 +18860,14 @@ def get_promote_main_markup():
     )
 
 
+@_localized
 async def send_promote_main_menu(chat_id: int, user_id: int, user_first_name: str, message_to_edit: types.Message = None):
     user = get_user(user_id)
     mp_bal = user.get("mp_balance", 0) if user else 0
     user_link = get_user_mention(user_id, user_first_name)
 
     text = (
-        f'<tg-emoji emoji-id="5341715473882955310">⚙️</tg-emoji> {user_link}, <i>что ты хочешь рекламировать?</i>\n'
-        f'----------------------\n'
-        f'<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji><b>Обязательно прочитай правила перед добавляем задания!</b>\n'
-        f'----------------------\n'
-        f'<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> Баланс: <b>{format_number(mp_bal)} MPOINT</b>'
+        _lf('<tg-emoji emoji-id="5341715473882955310">⚙️</tg-emoji> {0}, <i>что ты хочешь рекламировать?</i>\n----------------------\n<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji><b>Обязательно прочитай правила перед добавляем задания!</b>\n----------------------\n<tg-emoji emoji-id="5307594157739515229">💎</tg-emoji> Баланс: <b>{1} MPOINT</b>', (_fmt(user_link, '', -1), _fmt(format_number(mp_bal), '', -1)))
     )
     kb = get_promote_main_markup()
 
@@ -19584,36 +18923,38 @@ def mark_task_completed(user_id, task_id):
         raise
 
 
+@_localized
 def build_earn_menu(user_id) -> (str, InlineKeyboardMarkup):
     user = get_user(user_id)
     mp_balance = user.get("mp_balance", 0) if user else 0
     available_tasks = [task for task in TASKS_INFO if not task_completed(user_id, task["id"])]
 
     lines = [
-        "💰 <b>Заработать</b>",
+        _l('💰 <b>Заработать</b>'),
         "<code>·····················</code>",
-        f"💎 Баланс: <b>{format_number(mp_balance)} MP</b>",
+        _lf('💎 Баланс: <b>{0} MP</b>', (_fmt(format_number(mp_balance), '', -1),)),
         "",
-        "Доступные задания:",
+        _l('Доступные задания:'),
     ]
 
     keyboard_rows = []
     if available_tasks:
         for task in available_tasks:
-            lines.append(f"• {html.escape(task['title'])} — +{format_number(task['reward'])} MP")
+            lines.append(_lf('• {0} — +{1} MP', (_fmt(_label(html.escape(task['title'])), '', -1), _fmt(format_number(task['reward']), '', -1))))
             keyboard_rows.append([
-                InlineKeyboardButton(text="➡️ Перейти", url=task["url"]),
-                InlineKeyboardButton(text="✅ Проверить", callback_data=f"earn_check:{task['id']}")
+                InlineKeyboardButton(text=_l('➡️ Перейти'), url=task["url"]),
+                InlineKeyboardButton(text=_l('✅ Проверить'), callback_data=f"earn_check:{task['id']}")
             ])
     else:
-        lines.append("• Все доступные задания уже выполнены ✅")
+        lines.append(_l('• Все доступные задания уже выполнены ✅'))
 
-    keyboard_rows.append([InlineKeyboardButton(text="🔄 Обновить", callback_data="earn_refresh")])
+    keyboard_rows.append([InlineKeyboardButton(text=_l('🔄 Обновить'), callback_data="earn_refresh")])
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
 @dp.message(Command("earning", "earn", "заработать", "заработок"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn"]))
+@_localized
 async def cmd_earning(message: types.Message):
     user_id = message.from_user.id
     text, keyboard = build_earn_menu(user_id)
@@ -19624,6 +18965,7 @@ async def cmd_earning(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "earn_refresh"))
+@_localized
 async def process_earn_refresh(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     text, keyboard = build_earn_menu(user_id)
@@ -19635,21 +18977,22 @@ async def process_earn_refresh(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("earn_check:")))
+@_localized
 async def process_earn_check(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     task_id = callback.data.split(":", 1)[1]
     task = next((item for item in TASKS_INFO if item["id"] == task_id), None)
     if not task:
-        await callback.answer("Задание не найдено", show_alert=True)
+        await callback.answer(_l('Задание не найдено'), show_alert=True)
         return
 
     if task_completed(user_id, task_id):
-        await callback.answer("Уже выполнено", show_alert=True)
+        await callback.answer(_l('Уже выполнено'), show_alert=True)
         return
 
     is_subscribed = await check_user_subscribed(user_id, task["chat"])
     if not is_subscribed:
-        await callback.answer("Вы ещё не подписались на канал", show_alert=True)
+        await callback.answer(_l('Вы ещё не подписались на канал'), show_alert=True)
         return
 
     try:
@@ -19659,7 +19002,7 @@ async def process_earn_check(callback: types.CallbackQuery):
                 conn.rollback()
             except Exception:
                 pass
-            await callback.answer("Уже выполнено", show_alert=True)
+            await callback.answer(_l('Уже выполнено'), show_alert=True)
             return
         cursor.execute(
             "UPDATE users SET mp_balance = COALESCE(mp_balance, 0) + ? WHERE user_id = ?",
@@ -19671,7 +19014,7 @@ async def process_earn_check(callback: types.CallbackQuery):
             conn.rollback()
         except Exception:
             pass
-        await callback.answer("Не удалось начислить награду. Попробуйте позже", show_alert=True)
+        await callback.answer(_l('Не удалось начислить награду. Попробуйте позже'), show_alert=True)
         return
 
     text, keyboard = build_earn_menu(user_id)
@@ -19679,24 +19022,25 @@ async def process_earn_check(callback: types.CallbackQuery):
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception:
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
-    await callback.answer(f"Задание выполнено! +{format_number(task['reward'])} MP", show_alert=True)
+    await callback.answer(_lf('Задание выполнено! +{0} MP', (_fmt(format_number(task['reward']), '', -1),)), show_alert=True)
 
 
 @dp.message(Command("promote", "продвижение"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение"]))
+@_localized
 async def cmd_promote(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
         keyboard = InlineKeyboardMarkup(
             inline_keyboard=[
                 [
                     InlineKeyboardButton(
-                        text="Перейти в продвижение",
+                        text=_l('Перейти в продвижение'),
                         url=f"https://t.me/{BOT_USERNAME}?start=promote"
                     )
                 ]
             ]
         )
-        await message.reply("<i>Эта команда работает только в личных сообщениях!</i>", reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Эта команда работает только в личных сообщениях!</i>'), reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
     user_id = message.from_user.id
@@ -19705,6 +19049,7 @@ async def cmd_promote(message: types.Message):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "promote_menu"))
+@_localized
 async def process_promote_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     promote_user_states.pop(user_id, None)
@@ -19713,6 +19058,7 @@ async def process_promote_menu(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data in ["promote_type_channel", "promote_type_chat"]))
+@_localized
 async def process_promote_type(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     target_type = "channel" if callback.data == "promote_type_channel" else "chat"
@@ -19723,10 +19069,7 @@ async def process_promote_type(callback: types.CallbackQuery):
 
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
-        f'<tg-emoji emoji-id="5373012449597335010">👤</tg-emoji> <i>{user_link}, напиши цену за 1 подписчика!\n'
-        f'----------------------\n'
-        f'<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Минимальная цена - 1 MPOINT!</i>\n'
-        f'<blockquote>🔝 <b>Чем выше цена за подписчика — тем выше будет в списке твое задание!</b></blockquote>'
+        _lf('<tg-emoji emoji-id="5373012449597335010">👤</tg-emoji> <i>{0}, напиши цену за 1 подписчика!\n----------------------\n<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> Минимальная цена - 1 MPOINT!</i>\n<blockquote>🔝 <b>Чем выше цена за подписчика — тем выше будет в списке твое задание!</b></blockquote>', (_fmt(user_link, '', -1),))
     )
     kb = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -19736,7 +19079,7 @@ async def process_promote_type(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="5 MP", callback_data="promote_price_5", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="« Назад", callback_data="promote_menu")
+                InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_menu")
             ]
         ]
     )
@@ -19748,6 +19091,7 @@ async def process_promote_type(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_price_")))
+@_localized
 async def process_promote_price_choice(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     state_data = promote_user_states.get(user_id, {})
@@ -19760,6 +19104,7 @@ async def process_promote_price_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@_localized
 async def handle_promote_price_selected(chat_id: int, user_id: int, first_name: str, price: int, message_to_edit: types.Message = None):
     if price < 1:
         price = 1
@@ -19777,10 +19122,9 @@ async def handle_promote_price_selected(chat_id: int, user_id: int, first_name: 
 
     if max_subs < 1:
         text = (
-            f'{user_link}, <i>у вас недостаточно MPOINT на балансе!\n'
-            f'Баланс: <b>{format_number(mp_balance)} MP</b>. Для цены {price} MP требуется минимум {price} MP.</i>'
+            _lf('{0}, <i>у вас недостаточно MPOINT на балансе!\nБаланс: <b>{1} MP</b>. Для цены {2} MP требуется минимум {3} MP.</i>', (_fmt(user_link, '', -1), _fmt(format_number(mp_balance), '', -1), _fmt(price, '', -1), _fmt(price, '', -1)))
         )
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data="promote_type_channel" if state_data.get("target_type") == "channel" else "promote_type_chat")]])
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_type_channel" if state_data.get("target_type") == "channel" else "promote_type_chat")]])
         if message_to_edit:
             try:
                 await message_to_edit.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -19791,21 +19135,19 @@ async def handle_promote_price_selected(chat_id: int, user_id: int, first_name: 
         return
 
     text = (
-        f'<tg-emoji emoji-id="5472355270787079946">🧮</tg-emoji> <i>{user_link}, введи количество подписчиков:\n'
-        f'---------------\n'
-        f'🔘 <b>Максимум:</b> {format_number(max_subs)} чел.</i>'
+        _lf('<tg-emoji emoji-id="5472355270787079946">🧮</tg-emoji> <i>{0}, введи количество подписчиков:\n---------------\n🔘 <b>Максимум:</b> {1} чел.</i>', (_fmt(user_link, '', -1), _fmt(format_number(max_subs), '', -1)))
     )
 
     row1 = []
     for count_opt in [1, 5, 10]:
         if count_opt <= max_subs:
-            row1.append(InlineKeyboardButton(text=f"{count_opt} чел.", callback_data=f"promote_subs_{count_opt}", style="primary"))
+            row1.append(InlineKeyboardButton(text=_lf('{0} чел.', (_fmt(count_opt, '', -1),)), callback_data=f"promote_subs_{count_opt}", style="primary"))
 
     kb_rows = []
     if row1:
         kb_rows.append(row1)
-    kb_rows.append([InlineKeyboardButton(text=f"Макс • {format_number(max_subs)} чел.", callback_data=f"promote_subs_{max_subs}", style="primary")])
-    kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="promote_type_channel" if state_data.get("target_type") == "channel" else "promote_type_chat")])
+    kb_rows.append([InlineKeyboardButton(text=_lf('Макс • {0} чел.', (_fmt(format_number(max_subs), '', -1),)), callback_data=f"promote_subs_{max_subs}", style="primary")])
+    kb_rows.append([InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_type_channel" if state_data.get("target_type") == "channel" else "promote_type_chat")])
 
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
@@ -19819,6 +19161,7 @@ async def handle_promote_price_selected(chat_id: int, user_id: int, first_name: 
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_subs_")))
+@_localized
 async def process_promote_subs_choice(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -19830,6 +19173,7 @@ async def process_promote_subs_choice(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@_localized
 async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: str, count: int, message_to_edit: types.Message = None):
     state_data = promote_user_states.get(user_id, {})
     price = state_data.get("price", 1)
@@ -19849,7 +19193,7 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
 
     target_type = state_data.get("target_type", "channel")
     is_channel = (target_type == "channel")
-    btn_text = "Отправить канал" if is_channel else "Отправить чат"
+    btn_text = _l('Отправить канал') if is_channel else _l('Отправить чат')
 
     if message_to_edit:
         try:
@@ -19858,14 +19202,12 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
             pass
 
     text1 = (
-        '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji> ВАЖНО <tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>\n'
-        '<blockquote>Канал/чат не должен нарушать правила Telegram. В случае нарушения мы ограничим доступ к боту навсегда.</blockquote>\n'
-        f'<i>{"Канал" if is_channel else "Чат"} должен быть публичным и без заявок на вступление</i>'
+        _lf('<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji> ВАЖНО <tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>\n<blockquote>Канал/чат не должен нарушать правила Telegram. В случае нарушения мы ограничим доступ к боту навсегда.</blockquote>\n<i>{0} должен быть публичным и без заявок на вступление</i>', (_fmt(_l('Канал') if is_channel else _l('Чат'), '', -1),))
     )
     msg1 = await bot.send_message(chat_id, text1, parse_mode=ParseMode.HTML)
 
-    text2 = '<i>⛓💥"Хотите отменить добавление? Если нет, выберите кнопку на клавиатуре.👇</i>'
-    kb_cancel = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="promote_cancel", style="danger")]])
+    text2 = _l('<i>⛓💥"Хотите отменить добавление? Если нет, выберите кнопку на клавиатуре.👇</i>')
+    kb_cancel = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('Отмена'), callback_data="promote_cancel", style="danger")]])
     msg2 = await bot.send_message(chat_id, text2, reply_markup=kb_cancel, parse_mode=ParseMode.HTML)
 
     if is_channel:
@@ -19912,7 +19254,7 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
     )
 
     try:
-        msg3 = await bot.send_message(chat_id, "👇 Нажмите кнопку внизу клавиатуры:", reply_markup=reply_kb)
+        msg3 = await bot.send_message(chat_id, _l('👇 Нажмите кнопку внизу клавиатуры:'), reply_markup=reply_kb)
     except Exception as e:
         logging.warning(f"Failed to send KeyboardButtonRequestChat with rights: {e}")
         fallback_kb = ReplyKeyboardMarkup(
@@ -19931,20 +19273,21 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
             resize_keyboard=True,
             one_time_keyboard=True
         )
-        msg3 = await bot.send_message(chat_id, "👇 Нажмите кнопку внизу клавиатуры:", reply_markup=fallback_kb)
+        msg3 = await bot.send_message(chat_id, _l('👇 Нажмите кнопку внизу клавиатуры:'), reply_markup=fallback_kb)
 
     state_data["msg_ids"] = [msg1.message_id, msg2.message_id, msg3.message_id]
     promote_user_states[user_id] = state_data
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "promote_cancel"))
+@_localized
 async def process_promote_cancel(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     state_data = promote_user_states.pop(user_id, None)
     if state_data and "msg_ids" in state_data:
         await _delete_messages(callback.message.chat.id, state_data["msg_ids"], bot)
 
-    rm_msg = await callback.message.answer("❌ <i>Добавление задания отменено.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+    rm_msg = await callback.message.answer(_l('❌ <i>Добавление задания отменено.</i>'), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
     try:
         await asyncio.sleep(1)
         await rm_msg.delete()
@@ -19955,6 +19298,7 @@ async def process_promote_cancel(callback: types.CallbackQuery):
     await callback.answer()
 
 
+@_localized
 async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, first_name: str, state_data: dict, real_chat_id: int, chat_title: str, chat_username: str):
     target_type = state_data.get("target_type", "channel")
     price = state_data.get("price", 1)
@@ -19965,7 +19309,7 @@ async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, 
     mp_balance = user.get("mp_balance", 0) if user else 0
 
     if mp_balance < total_cost:
-        await message.answer(f"<i>Недостаточно MPOINT! Требуется {total_cost} MP, у вас {mp_balance} MP.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+        await message.answer(_lf('<i>Недостаточно MPOINT! Требуется {0} MP, у вас {1} MP.</i>', (_fmt(total_cost, '', -1), _fmt(mp_balance, '', -1))), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         return
 
     now_iso = get_msk_now().isoformat()
@@ -19981,27 +19325,28 @@ async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, 
             """, (user_id, real_chat_id, chat_title, clean_username, target_type, price, subs, total_cost, now_iso))
     except Exception as e:
         logging.error(f"Failed to insert p2p_promotion: {e}")
-        await message.answer("<i>Произошла ошибка при сохранении задания. Попробуйте снова.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+        await message.answer(_l('<i>Произошла ошибка при сохранении задания. Попробуйте снова.</i>'), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         return
 
-    target_ru = "канал" if target_type == "channel" else "чат"
+    target_ru = _l('канал') if target_type == "channel" else _l('чат')
     target_label = f"@{clean_username}" if clean_username else chat_title
     succ_text = (
-        f'<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji><i>{html.escape(get_user_display_name(user_id, first_name))}, твой {target_ru} {html.escape(target_label)} успешно добавлен!</i>'
+        _lf('<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji><i>{0}, твой {1} {2} успешно добавлен!</i>', (_fmt(html.escape(get_user_display_name(user_id, first_name)), '', -1), _fmt(target_ru, '', -1), _fmt(html.escape(target_label), '', -1)))
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« В меню продвижения", callback_data="promote_menu", style="primary")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('« В меню продвижения'), callback_data="promote_menu", style="primary")]])
     await message.answer(succ_text, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
-    await message.answer("Управляйте заданиями в меню:", reply_markup=kb, parse_mode=ParseMode.HTML)
+    await message.answer(_l('Управляйте заданиями в меню:'), reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
 @dp.message(_inline_filter(lambda message: message.chat_shared is not None))
+@_localized
 async def process_chat_shared(message: types.Message):
     if message.chat.type != "private":
         return
     user_id = message.from_user.id
     state_data = promote_user_states.pop(user_id, None)
     if not state_data or state_data.get("step") != "wait_chat":
-        await message.reply("<i>Сессия добавления задания истекла. Введите /promote заново.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
+        await message.reply(_l('<i>Сессия добавления задания истекла. Введите /promote заново.</i>'), reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         return
 
     if "msg_ids" in state_data:
@@ -20023,7 +19368,7 @@ async def process_chat_shared(message: types.Message):
     else:
         candidates = [real_chat_id]
 
-    chat_title = shared_title or ("Канал" if target_type == "channel" else "Чат")
+    chat_title = shared_title or (_l('Канал') if target_type == "channel" else _l('Чат'))
     chat_username = (shared_username or "").strip().lstrip("@")
 
     if not chat_username or not shared_title:
@@ -20040,11 +19385,12 @@ async def process_chat_shared(message: types.Message):
             except Exception as e:
                 logging.warning(f"bot.get_chat({cid}) failed: {e}")
 
-    first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
+    first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')
     await finalize_p2p_promotion_creation(message, user_id, first_name, state_data, real_chat_id, chat_title, chat_username)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "promote_active"))
+@_localized
 async def process_promote_active(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -20062,10 +19408,7 @@ async def process_promote_active(callback: types.CallbackQuery):
         rows = []
 
     text = (
-        f'🌀 <i>{user_link}, здесь можно включить и выключить задачи!</i>\n'
-        f'----------------------\n'
-        f'🟢 - вкл. / ⭕️ - выкл. / ❌ - удалить.\n\n'
-        f'<blockquote>ℹ️ Стикер показывают статус задания | название вашего канала/чата/поста | заданная цель / сделанная задача. Если вы удалите задание остаток MP будует возвращен на баланс.</blockquote>'
+        _lf('🌀 <i>{0}, здесь можно включить и выключить задачи!</i>\n----------------------\n🟢 - вкл. / ⭕️ - выкл. / ❌ - удалить.\n\n<blockquote>ℹ️ Стикер показывают статус задания | название вашего канала/чата/поста | заданная цель / сделанная задача. Если вы удалите задание остаток MP будует возвращен на баланс.</blockquote>', (_fmt(user_link, '', -1),))
     )
 
     kb_rows = []
@@ -20080,9 +19423,9 @@ async def process_promote_active(callback: types.CallbackQuery):
                 InlineKeyboardButton(text="❌", callback_data=f"promote_del_{p_id}", style="danger")
             ])
     else:
-        text += "\n\n<blockquote><i>У вас пока нет активных заданий.</i></blockquote>"
+        text += _l('\n\n<blockquote><i>У вас пока нет активных заданий.</i></blockquote>')
 
-    kb_rows.append([InlineKeyboardButton(text="« Назад", callback_data="promote_menu")])
+    kb_rows.append([InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_menu")])
     kb = InlineKeyboardMarkup(inline_keyboard=kb_rows)
 
     try:
@@ -20093,6 +19436,7 @@ async def process_promote_active(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_toggle_")))
+@_localized
 async def process_promote_toggle(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -20106,6 +19450,7 @@ async def process_promote_toggle(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data and c.data.startswith("promote_del_")))
+@_localized
 async def process_promote_delete(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     try:
@@ -20120,17 +19465,18 @@ async def process_promote_delete(callback: types.CallbackQuery):
             if refund_mp > 0:
                 cursor.execute("UPDATE users SET mp_balance = COALESCE(mp_balance, 0) + ? WHERE user_id = ?", (refund_mp, user_id))
             conn.commit()
-            await callback.answer(f"Задание удалено! Возвращено {refund_mp} MP.", show_alert=True)
+            await callback.answer(_lf('Задание удалено! Возвращено {0} MP.', (_fmt(refund_mp, '', -1),)), show_alert=True)
         else:
-            await callback.answer("Задание не найдено.", show_alert=True)
+            await callback.answer(_l('Задание не найдено.'), show_alert=True)
     except Exception as e:
         logging.error(f"Error deleting promotion: {e}")
-        await callback.answer("Ошибка при удалении задания.", show_alert=True)
+        await callback.answer(_l('Ошибка при удалении задания.'), show_alert=True)
 
     await process_promote_active(callback)
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "promote_completed"))
+@_localized
 async def process_promote_completed(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
@@ -20151,15 +19497,9 @@ async def process_promote_completed(callback: types.CallbackQuery):
     joins = completed_subs
 
     text = (
-        f'<tg-emoji emoji-id="5312019687746349814">✅</tg-emoji><i> {user_link}, твои завершенные задачи:</i>\n'
-        f'----------------------\n'
-        f'👀 Показов: <b>{format_number(views)}</b>\n'
-        f'👥 Подписчиков: <b>{format_number(subs)}</b>\n'
-        f'👫 Вступлений: <b>{format_number(joins)}</b>\n'
-        f'----------------------\n'
-        f'<blockquote>ℹ️ Данная статистика показывает все задания, за все время.</blockquote>'
+        _lf('<tg-emoji emoji-id="5312019687746349814">✅</tg-emoji><i> {0}, твои завершенные задачи:</i>\n----------------------\n👀 Показов: <b>{1}</b>\n👥 Подписчиков: <b>{2}</b>\n👫 Вступлений: <b>{3}</b>\n----------------------\n<blockquote>ℹ️ Данная статистика показывает все задания, за все время.</blockquote>', (_fmt(user_link, '', -1), _fmt(format_number(views), '', -1), _fmt(format_number(subs), '', -1), _fmt(format_number(joins), '', -1)))
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data="promote_menu")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_menu")]])
 
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -20169,16 +19509,12 @@ async def process_promote_completed(callback: types.CallbackQuery):
 
 
 @dp.callback_query(_inline_filter(lambda c: c.data == "promote_rules"))
+@_localized
 async def process_promote_rules(callback: types.CallbackQuery):
     text = (
-        '<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Правила добавления заданий:</b>\n'
-        '----------------------\n'
-        '1. Канал или чат должен быть публичным и без обязательных заявок на вступление.\n'
-        '2. Запрещено рекламировать контент, нарушающий правила Telegram (мошенничество, спам, запрещенный контент).\n'
-        '3. При удалении активного задания остаток неиспользованных MPOINT моментально возвращается на ваш баланс.\n'
-        '4. Вы можете приостановить выполнение задания в любой момент в разделе «Активные».'
+        _l('<tg-emoji emoji-id="5447644880824181073">⚠️</tg-emoji> <b>Правила добавления заданий:</b>\n----------------------\n1. Канал или чат должен быть публичным и без обязательных заявок на вступление.\n2. Запрещено рекламировать контент, нарушающий правила Telegram (мошенничество, спам, запрещенный контент).\n3. При удалении активного задания остаток неиспользованных MPOINT моментально возвращается на ваш баланс.\n4. Вы можете приостановить выполнение задания в любой момент в разделе «Активные».')
     )
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« Назад", callback_data="promote_menu")]])
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('« Назад'), callback_data="promote_menu")]])
 
     try:
         await callback.message.edit_text(text, reply_markup=kb, parse_mode=ParseMode.HTML)
@@ -20188,6 +19524,7 @@ async def process_promote_rules(callback: types.CallbackQuery):
 
 
 @dp.message(_inline_filter(lambda message: message.text and message.from_user.id in promote_user_states))
+@_localized
 async def process_promote_text_input(message: types.Message):
     if message.chat.type != "private":
         return
@@ -20206,27 +19543,27 @@ async def process_promote_text_input(message: types.Message):
         raw_text = message.text.strip()
         uname = raw_text.replace("https://t.me/", "").replace("http://t.me/", "").replace("t.me/", "").replace("@", "").strip().split("/")[0].split("?")[0]
         if not uname:
-            await message.reply("<i>Пожалуйста, укажите корректный юзернейм или ссылку (например: @channel или https://t.me/channel).</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Пожалуйста, укажите корректный юзернейм или ссылку (например: @channel или https://t.me/channel).</i>'), parse_mode=ParseMode.HTML)
             return
 
         try:
             chat_obj = await bot.get_chat(f"@{uname}")
             if not chat_obj:
-                await message.reply(f"<i>Не удалось найти публичный канал/чат @{uname}. Убедитесь, что он существует.</i>", parse_mode=ParseMode.HTML)
+                await message.reply(_lf('<i>Не удалось найти публичный канал/чат @{0}. Убедитесь, что он существует.</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
                 return
             real_chat_id = chat_obj.id
             chat_title = chat_obj.title or uname
             chat_username = chat_obj.username or uname
         except Exception as e:
             logging.warning(f"Failed to get_chat for @{uname}: {e}")
-            await message.reply(f"<i>Не удалось найти публичный канал/чат @{uname}. Проверьте правильность написания и убедитесь, что канал публичный.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_lf('<i>Не удалось найти публичный канал/чат @{0}. Проверьте правильность написания и убедитесь, что канал публичный.</i>', (_fmt(uname, '', -1),)), parse_mode=ParseMode.HTML)
             return
 
         if "msg_ids" in state_data:
             await _delete_messages(message.chat.id, state_data["msg_ids"], bot)
 
         promote_user_states.pop(user_id, None)
-        first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
+        first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок')
         await finalize_p2p_promotion_creation(message, user_id, first_name, state_data, real_chat_id, chat_title, chat_username)
         return
 
@@ -20234,14 +19571,14 @@ async def process_promote_text_input(message: types.Message):
 
     if step == "price":
         if raw_val is None or raw_val < 1:
-            await message.reply("<i>Минимальная цена — 1 MPOINT! Введите корректное число.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Минимальная цена — 1 MPOINT! Введите корректное число.</i>'), parse_mode=ParseMode.HTML)
             return
         await handle_promote_price_selected(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), int(raw_val))
         return
 
     if step == "subs":
         if raw_val is None or raw_val < 1:
-            await message.reply("<i>Количество подписчиков должно быть от 1! Введите корректное число.</i>", parse_mode=ParseMode.HTML)
+            await message.reply(_l('<i>Количество подписчиков должно быть от 1! Введите корректное число.</i>'), parse_mode=ParseMode.HTML)
             return
         await handle_promote_subs_selected(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), int(raw_val))
         return
@@ -20264,11 +19601,12 @@ def _register_handler_first(observer, handler, *filters):
     observer.handlers.insert(0, observer.handlers.pop())
 
 
+@_localized
 def _resolve_role_target(message, raw_target=None):
     if raw_target:
         value = raw_target.strip()
         if value.isdigit():
-            return int(value), "Пользователь", None
+            return int(value), _l('Пользователь'), None
         if value.startswith("@"):
             found = get_user_by_username(value[1:])
             if found:
@@ -20277,17 +19615,17 @@ def _resolve_role_target(message, raw_target=None):
                     found.get("first_name") or value,
                     found.get("username"),
                 )
-        return None, "Пользователь", None
+        return None, _l('Пользователь'), None
 
     reply = getattr(message, "reply_to_message", None)
     replied_user = getattr(reply, "from_user", None)
     if replied_user:
         return (
             int(replied_user.id),
-            get_user_display_name(replied_user.id, replied_user.first_name) or "Пользователь",
+            get_user_display_name(replied_user.id, replied_user.first_name) or _l('Пользователь'),
             replied_user.username,
         )
-    return None, "Пользователь", None
+    return None, _l('Пользователь'), None
 
 
 def _role_user_link(user_id, name, username=None):
@@ -20317,6 +19655,7 @@ def _save_admin_role(user_id, enabled, changed_by):
         ADMINS.remove(user_id)
 
 
+@_localized
 async def _handle_admin_role(message: types.Message):
     match = _ROLE_COMMAND_PATTERN.match((message.text or "").strip())
     if not match:
@@ -20325,9 +19664,7 @@ async def _handle_admin_role(message: types.Message):
     actor_id = int(message.from_user.id)
     if not is_owner(actor_id):
         await message.reply(
-            f'{_role_emoji("warning", "⚠️")} <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n'
-            "━━━━━━━━━━━━━━━━━━\n"
-            "<b>Изменять роли может только владелец бота.</b>",
+            _lf('{0} <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n━━━━━━━━━━━━━━━━━━\n<b>Изменять роли может только владелец бота.</b>', (_fmt(_role_emoji('warning', '⚠️'), '', -1),)),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -20336,19 +19673,14 @@ async def _handle_admin_role(message: types.Message):
     target_id, target_name, target_username = _resolve_role_target(message, match.group(2))
     if target_id is None or target_id <= 0:
         await message.reply(
-            f'{_role_emoji("warning", "⚠️")} <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n'
-            "━━━━━━━━━━━━━━━━━━\n"
-            "<b>Укажите пользователя</b>\n\n"
-            "<blockquote>Ответьте на сообщение пользователя или укажите его ID / username.</blockquote>\n"
-            "Примеры: <code>+ADM @username</code> · <code>-adm 123456789</code>",
+            _lf('{0} <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n━━━━━━━━━━━━━━━━━━\n<b>Укажите пользователя</b>\n\n<blockquote>Ответьте на сообщение пользователя или укажите его ID / username.</blockquote>\nПримеры: <code>+ADM @username</code> · <code>-adm 123456789</code>', (_fmt(_role_emoji('warning', '⚠️'), '', -1),)),
             parse_mode=ParseMode.HTML,
         )
         return
 
     if is_owner(target_id):
         await message.reply(
-            f'{_role_emoji("warning", "⚠️")} <b>Владельца нельзя понизить до администратора.</b>\n'
-            f"ID: <code>{target_id}</code>",
+            _lf('{0} <b>Владельца нельзя понизить до администратора.</b>\nID: <code>{1}</code>', (_fmt(_role_emoji('warning', '⚠️'), '', -1), _fmt(target_id, '', -1))),
             parse_mode=ParseMode.HTML,
         )
         return
@@ -20356,31 +19688,25 @@ async def _handle_admin_role(message: types.Message):
     enabled = action == "+"
     was_admin = is_admin(target_id)
     if enabled and was_admin:
-        result = "Пользователь уже является администратором."
+        result = _l('Пользователь уже является администратором.')
     elif not enabled and not was_admin:
-        result = "У пользователя уже нет роли администратора."
+        result = _l('У пользователя уже нет роли администратора.')
     else:
         try:
             _save_admin_role(target_id, enabled, actor_id)
             if enabled:
                 get_admin_control(target_id)
-            result = "Администратор назначен." if enabled else "Права администратора сняты."
+            result = _l('Администратор назначен.') if enabled else _l('Права администратора сняты.')
         except Exception:
             await message.reply(
-                f'{_role_emoji("warning", "⚠️")} <b>Не удалось сохранить изменение.</b>\n'
-                "Проверьте доступность базы данных и повторите попытку.",
+                _lf('{0} <b>Не удалось сохранить изменение.</b>\nПроверьте доступность базы данных и повторите попытку.', (_fmt(_role_emoji('warning', '⚠️'), '', -1),)),
                 parse_mode=ParseMode.HTML,
             )
             return
 
-    role_label = "АДМИНИСТРАТОР" if enabled else "БЫВШИЙ АДМИНИСТРАТОР"
+    role_label = _l('АДМИНИСТРАТОР') if enabled else _l('БЫВШИЙ АДМИНИСТРАТОР')
     await message.reply(
-        "🐍 <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f'{_role_emoji("check", "✅")} <b>{html.escape(result)}</b>\n'
-        f"👤 ID: <code>{target_id}</code>\n"
-        f"🔗 {_role_user_link(target_id, target_name, target_username)}\n\n"
-        f"<blockquote>{role_label}. Изменение сохранено в SQLite и действует сразу.</blockquote>",
+        _lf('🐍 <b>МИНЫ · УПРАВЛЕНИЕ ДОСТУПОМ</b>\n━━━━━━━━━━━━━━━━━━\n{0} <b>{1}</b>\n👤 ID: <code>{2}</code>\n🔗 {3}\n\n<blockquote>{4}. Изменение сохранено в SQLite и действует сразу.</blockquote>', (_fmt(_role_emoji('check', '✅'), '', -1), _fmt(html.escape(result), '', -1), _fmt(target_id, '', -1), _fmt(_role_user_link(target_id, target_name, target_username), '', -1), _fmt(role_label, '', -1))),
         parse_mode=ParseMode.HTML,
     )
 
@@ -20401,25 +19727,27 @@ def _panel_command_filter(message):
     return text == "панель" or _message_command_name(message) in {"panel", "панель"}
 
 
+@_localized
 def _panel_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(text="👥 Игроки", callback_data="creator_panel:players", style="primary"),
-                InlineKeyboardButton(text="🎮 Игры", callback_data="creator_panel:games", style="primary"),
+                InlineKeyboardButton(text=_l('👥 Игроки'), callback_data="creator_panel:players", style="primary"),
+                InlineKeyboardButton(text=_l('🎮 Игры'), callback_data="creator_panel:games", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="💰 Экономика", callback_data="creator_panel:economy", style="success"),
-                InlineKeyboardButton(text="📊 Статистика", callback_data="creator_panel:stats", style="primary"),
+                InlineKeyboardButton(text=_l('💰 Экономика'), callback_data="creator_panel:economy", style="success"),
+                InlineKeyboardButton(text=_l('📊 Статистика'), callback_data="creator_panel:stats", style="primary"),
             ],
             [
-                InlineKeyboardButton(text="📜 Журнал", callback_data="creator_panel:journal", style="primary"),
-                InlineKeyboardButton(text="⚙️ Система", callback_data="creator_panel:system", style="primary"),
+                InlineKeyboardButton(text=_l('📜 Журнал'), callback_data="creator_panel:journal", style="primary"),
+                InlineKeyboardButton(text=_l('⚙️ Система'), callback_data="creator_panel:system", style="primary"),
             ],
         ]
     )
 
 
+@_localized
 def _panel_home_text(user_id):
     user_data = get_user(user_id) or {}
     games_played = int(user_data.get("games") or 0)
@@ -20429,29 +19757,17 @@ def _panel_home_text(user_id):
     if user_data.get("mp_daily_date") != today:
         transferred_today = 0
     transfer_limit = transferred_today + int(get_user_mp_limit(user_data))
-    role = "👑 Владелец" if is_owner(user_id) else "🛡 Администратор"
+    role = _l('👑 Владелец') if is_owner(user_id) else _l('🛡 Администратор')
     return (
-        "🧿 <b>МИНЫ · ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f'{_role_emoji("check", "✅")} <b>Система:</b> РАБОТАЕТ\n'
-        f"👤 <b>Роль:</b> {role}\n"
-        f"🆔 <b>Ваш ID:</b> <code>{user_id}</code>\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        f"💰 <b>Баланс:</b> {format_number(user_data.get('balance') or 0)} mCoin\n"
-        f"💎 <b>Очки:</b> {format_number(user_data.get('mp_balance') or 0)} MPOINT\n"
-        f'{_role_emoji("star", "⭐")} <b>Уровень:</b> {level} · Игр: {format_number(games_played)}\n'
-        f"🔄 <b>Переводы сегодня:</b> {format_number(transferred_today)} / "
-        f"{format_number(transfer_limit)} MPOINT\n"
-        "━━━━━━━━━━━━━━━━━━\n"
-        "<i>Выберите раздел управления:</i>"
+        _lf('🧿 <b>МИНЫ · ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n━━━━━━━━━━━━━━━━━━\n{0} <b>Система:</b> РАБОТАЕТ\n👤 <b>Роль:</b> {1}\n🆔 <b>Ваш ID:</b> <code>{2}</code>\n━━━━━━━━━━━━━━━━━━\n💰 <b>Баланс:</b> {3} mCoin\n💎 <b>Очки:</b> {4} MPOINT\n{5} <b>Уровень:</b> {6} · Игр: {7}\n🔄 <b>Переводы сегодня:</b> {8} / {9} MPOINT\n━━━━━━━━━━━━━━━━━━\n<i>Выберите раздел управления:</i>', (_fmt(_role_emoji('check', '✅'), '', -1), _fmt(role, '', -1), _fmt(user_id, '', -1), _fmt(format_number(user_data.get('balance') or 0), '', -1), _fmt(format_number(user_data.get('mp_balance') or 0), '', -1), _fmt(_role_emoji('star', '⭐'), '', -1), _fmt(level, '', -1), _fmt(format_number(games_played), '', -1), _fmt(format_number(transferred_today), '', -1), _fmt(format_number(transfer_limit), '', -1)))
     )
 
 
+@_localized
 async def _show_admin_panel(message, user_id, edit=False):
     if not is_admin(user_id):
         text = (
-            f'{_role_emoji("warning", "⚠️")} <b>Панель доступна только администраторам.</b>\n'
-            "Если вам выдали права, отправьте команду ещё раз."
+            _lf('{0} <b>Панель доступна только администраторам.</b>\nЕсли вам выдали права, отправьте команду ещё раз.', (_fmt(_role_emoji('warning', '⚠️'), '', -1),))
         )
         if edit:
             await message.edit_text(text, parse_mode=ParseMode.HTML)
@@ -20471,6 +19787,7 @@ async def _handle_panel_command(message: types.Message):
     await _show_admin_panel(message, int(message.from_user.id))
 
 
+@_localized
 def _panel_section_text(section):
     cursor.execute("SELECT COUNT(*) FROM users")
     users_count = int(cursor.fetchone()[0] or 0)
@@ -20478,10 +19795,7 @@ def _panel_section_text(section):
     if section == "players":
         admins_count = sum(1 for user_id in ADMINS if is_admin(user_id))
         return (
-            "👥 <b>ИГРОКИ</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Всего аккаунтов: <b>{format_number(users_count)}</b>\n"
-            f"Администраторов: <b>{admins_count}</b>\n"
-            f"Владельцев: <b>{len(OWNER_IDS)}</b>"
+            _lf('👥 <b>ИГРОКИ</b>\n━━━━━━━━━━━━━━━━━━\nВсего аккаунтов: <b>{0}</b>\nАдминистраторов: <b>{1}</b>\nВладельцев: <b>{2}</b>', (_fmt(format_number(users_count), '', -1), _fmt(admins_count, '', -1), _fmt(len(OWNER_IDS), '', -1)))
         )
 
     if section == "games":
@@ -20490,19 +19804,14 @@ def _panel_section_text(section):
         cursor.execute("SELECT COUNT(*) FROM games_history")
         history_count = int(cursor.fetchone()[0] or 0)
         return (
-            "🎮 <b>ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Сыграно всего: <b>{format_number(games_total)}</b>\n"
-            f"Записей в журнале: <b>{format_number(history_count)}</b>\n"
-            "Доступны: мины, башня, рулетка, слоты и другие игры бота."
+            _lf('🎮 <b>ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\nСыграно всего: <b>{0}</b>\nЗаписей в журнале: <b>{1}</b>\nДоступны: мины, башня, рулетка, слоты и другие игры бота.', (_fmt(format_number(games_total), '', -1), _fmt(format_number(history_count), '', -1)))
         )
 
     if section == "economy":
         cursor.execute("SELECT COALESCE(SUM(balance), 0), COALESCE(SUM(mp_balance), 0) FROM users")
         row = cursor.fetchone()
         return (
-            "💰 <b>ЭКОНОМИКА</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"mCoin на аккаунтах: <b>{format_number(row[0] or 0)}</b>\n"
-            f"MPOINT на аккаунтах: <b>{format_number(row[1] or 0)}</b>"
+            _lf('💰 <b>ЭКОНОМИКА</b>\n━━━━━━━━━━━━━━━━━━\nmCoin на аккаунтах: <b>{0}</b>\nMPOINT на аккаунтах: <b>{1}</b>', (_fmt(format_number(row[0] or 0), '', -1), _fmt(format_number(row[1] or 0), '', -1)))
         )
 
     if section == "stats":
@@ -20513,11 +19822,7 @@ def _panel_section_text(section):
         )
         row = cursor.fetchone()
         return (
-            "📊 <b>СТАТИСТИКА</b>\n━━━━━━━━━━━━━━━━━━\n"
-            f"Аккаунтов: <b>{format_number(users_count)}</b>\n"
-            f"Раундов в журнале: <b>{format_number(row[0] or 0)}</b>\n"
-            f"Раундов с выигрышем: <b>{format_number(row[1] or 0)}</b>\n"
-            f"Начислено выигрышей: <b>{format_number(row[2] or 0)} mCoin</b>"
+            _lf('📊 <b>СТАТИСТИКА</b>\n━━━━━━━━━━━━━━━━━━\nАккаунтов: <b>{0}</b>\nРаундов в журнале: <b>{1}</b>\nРаундов с выигрышем: <b>{2}</b>\nНачислено выигрышей: <b>{3} mCoin</b>', (_fmt(format_number(users_count), '', -1), _fmt(format_number(row[0] or 0), '', -1), _fmt(format_number(row[1] or 0), '', -1), _fmt(format_number(row[2] or 0), '', -1)))
         )
 
     if section == "journal":
@@ -20528,13 +19833,12 @@ def _panel_section_text(section):
         rows = cursor.fetchall()
         if rows:
             entries = "\n".join(
-                f"• <code>{int(row[0])}</code> · {html.escape(str(row[1] or 'игра'))} · "
-                f"ставка {format_number(row[2] or 0)} · выигрыш {format_number(row[3] or 0)}"
+                _lf('• <code>{0}</code> · {1} · ставка {2} · выигрыш {3}', (_fmt(int(row[0]), '', -1), _fmt(html.escape(str(row[1] or _l('игра'))), '', -1), _fmt(format_number(row[2] or 0), '', -1), _fmt(format_number(row[3] or 0), '', -1)))
                 for row in rows
             )
         else:
-            entries = "Журнал пока пуст."
-        return f"📜 <b>ПОСЛЕДНИЕ ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\n{entries}"
+            entries = _l('Журнал пока пуст.')
+        return _lf('📜 <b>ПОСЛЕДНИЕ ИГРЫ</b>\n━━━━━━━━━━━━━━━━━━\n{0}', (_fmt(entries, '', -1),))
 
     if section == "system":
         size_mb = os.path.getsize(SQLITE_DB_PATH) / (1024 * 1024) if os.path.isfile(SQLITE_DB_PATH) else 0
@@ -20543,28 +19847,26 @@ def _panel_section_text(section):
         cursor.execute("SELECT COUNT(*) FROM demo_modes WHERE enabled = 1")
         demo_count = int(cursor.fetchone()[0] or 0)
         return (
-            "⚙️ <b>СИСТЕМА</b>\n━━━━━━━━━━━━━━━━━━\n"
-            "Бот: <b>online</b>\n"
-            f"База SQLite: <b>{'OK' if integrity == 'ok' else html.escape(integrity)}</b>\n"
-            f"Размер базы: <b>{size_mb:.2f} MB</b>\n"
-            f"Активных creator/demo-режимов: <b>{demo_count}</b>"
+            _lf('⚙️ <b>СИСТЕМА</b>\n━━━━━━━━━━━━━━━━━━\nБот: <b>online</b>\nБаза SQLite: <b>{0}</b>\nРазмер базы: <b>{1} MB</b>\nАктивных creator/demo-режимов: <b>{2}</b>', (_fmt('OK' if integrity == 'ok' else html.escape(integrity), '', -1), _fmt(size_mb, f'.2f', -1), _fmt(demo_count, '', -1)))
         )
 
     raise ValueError("Unknown panel section")
 
 
+@_localized
 def _panel_back_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text="← В панель", callback_data="creator_panel:home", style="primary")]
+            [InlineKeyboardButton(text=_l('← В панель'), callback_data="creator_panel:home", style="primary")]
         ]
     )
 
 
+@_localized
 async def _handle_panel_callback(callback: types.CallbackQuery):
     user_id = int(callback.from_user.id)
     if not is_admin(user_id):
-        await callback.answer("Раздел доступен только администраторам.", show_alert=True)
+        await callback.answer(_l('Раздел доступен только администраторам.'), show_alert=True)
         return
 
     section = str(callback.data).split(":", 1)[1]
@@ -20579,49 +19881,48 @@ async def _handle_panel_callback(callback: types.CallbackQuery):
                 reply_markup=_panel_back_keyboard(),
             )
         except Exception:
-            await callback.answer("Не удалось загрузить раздел панели.", show_alert=True)
+            await callback.answer(_l('Не удалось загрузить раздел панели.'), show_alert=True)
             return
     await callback.answer()
 
 
+@_localized
 def _creator_mode_text(enabled):
-    status = "ВКЛЮЧЁН" if enabled else "ВЫКЛЮЧЕН"
+    status = _l('ВКЛЮЧЁН') if enabled else _l('ВЫКЛЮЧЕН')
     status_icon = _role_emoji("check", "✅") if enabled else _role_emoji("warning", "⚠️")
     lines = [
-        "🧪 <b>МИНЫ · РЕЖИМ СОЗДАТЕЛЯ</b>",
+        _l('🧪 <b>МИНЫ · РЕЖИМ СОЗДАТЕЛЯ</b>'),
         "━━━━━━━━━━━━━━━━━━",
-        f"{status_icon} <b>Статус: {status}</b>",
+        _lf('{0} <b>Статус: {1}</b>', (_fmt(status_icon, '', -1), _fmt(status, '', -1))),
         "",
     ]
     if enabled:
         lines.extend([
-            "Все поддерживаемые игры для вашего аккаунта используют выигрышную тестовую ветку.",
-            "<blockquote>Это изолированный demo-режим: реальные балансы, история, статистика и рейтинги "
-            "не меняются. На обычные игры других пользователей режим не влияет.</blockquote>",
-            "Отключить: <code>/creator_off</code>",
+            _l('Все поддерживаемые игры для вашего аккаунта используют выигрышную тестовую ветку.'),
+            _l('<blockquote>Это изолированный demo-режим: реальные балансы, история, статистика и рейтинги не меняются. На обычные игры других пользователей режим не влияет.</blockquote>'),
+            _l('Отключить: <code>/creator_off</code>'),
         ])
     else:
         lines.extend([
-            "Новые игры снова используют обычные случайные исходы.",
-            "<blockquote>Если при включённом режиме остался активный тестовый раунд, он завершится в "
-            "demo-контексте и не изменит экономику.</blockquote>",
-            "Включить: <code>/creator_on</code>",
+            _l('Новые игры снова используют обычные случайные исходы.'),
+            _l('<blockquote>Если при включённом режиме остался активный тестовый раунд, он завершится в demo-контексте и не изменит экономику.</blockquote>'),
+            _l('Включить: <code>/creator_on</code>'),
         ])
     return "\n".join(lines)
 
 
+@_localized
 async def _set_creator_mode(message: types.Message, enabled):
     user_id = int(message.from_user.id)
     if not is_owner(user_id):
         await message.reply(
-            f'{_role_emoji("warning", "⚠️")} <b>Режим создателя доступен только владельцам.</b>',
+            _lf('{0} <b>Режим создателя доступен только владельцам.</b>', (_fmt(_role_emoji('warning', '⚠️'), '', -1),)),
             parse_mode=ParseMode.HTML,
         )
         return
     if not _set_demo_mode(user_id, enabled):
         await message.reply(
-            f'{_role_emoji("warning", "⚠️")} <b>Не удалось сохранить режим.</b>\n'
-            "Проверьте доступность базы данных и повторите попытку.",
+            _lf('{0} <b>Не удалось сохранить режим.</b>\nПроверьте доступность базы данных и повторите попытку.', (_fmt(_role_emoji('warning', '⚠️'), '', -1),)),
             parse_mode=ParseMode.HTML,
         )
         return
