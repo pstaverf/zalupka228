@@ -10,6 +10,8 @@ import math
 import sqlite3
 import threading
 import time
+from collections import OrderedDict
+from functools import wraps
 from typing import Optional
 from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
@@ -34,12 +36,10 @@ def get_msk_today_str():
     return get_msk_now().strftime("%Y-%m-%d")
 
 
-# --- INLINE CONFIG (single-file local build) ---
 try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
-    # Lightweight .env parser without external dependencies
     if os.path.exists(".env"):
         try:
             with open(".env", "r", encoding="utf-8") as f:
@@ -54,7 +54,7 @@ except ImportError:
         except Exception:
             pass
 
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8943696232:AAG3rX23_WNM6OSfKLLkgDxK2yo8-HZ1O4k").strip()
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError(
         "TELEGRAM_BOT_TOKEN is missing. Set it in the hosting panel's environment variables "
@@ -71,7 +71,6 @@ _configured_admin_ids = [int(x.strip()) for x in admins_raw.split(",") if x.stri
 ADMINS = list(dict.fromkeys(DEFAULT_ADMIN_IDS + _configured_admin_ids))
 owners_raw = os.getenv("OWNERS", "8626190241,6650597854,6025818386")
 OWNER_IDS = set(int(x.strip()) for x in owners_raw.split(",") if x.strip().isdigit())
-# Preserve the existing owner and add the owners requested for this bot.
 OWNER_IDS.update({8626190241, 8533177365, 6025818386, 6650597854})
 for _owner_id in OWNER_IDS:
     if _owner_id not in ADMINS:
@@ -93,262 +92,429 @@ TASKS_INFO = [
     },
 ]
 
-# --- INLINE LOCAL SQLITE DATABASE LAYER (replaces db.py + pg_adapter.py) ---
-PG_SCHEMA_SQL = "\nCREATE TABLE IF NOT EXISTS users (\n    user_id BIGINT PRIMARY KEY,\n    username TEXT DEFAULT NULL,\n    balance BIGINT DEFAULT 0,\n    games BIGINT DEFAULT 0,\n    lost BIGINT DEFAULT 0,\n    bonus_time TEXT DEFAULT NULL,\n    registered_at TEXT DEFAULT NULL,\n    mp_balance BIGINT DEFAULT 0,\n    mp_daily_transferred BIGINT DEFAULT 0,\n    mp_daily_date TEXT DEFAULT NULL,\n    ref_earned BIGINT DEFAULT 0,\n    ref_count BIGINT DEFAULT 0,\n    referred_by BIGINT DEFAULT NULL,\n    max_balance BIGINT DEFAULT 0,\n    first_name TEXT DEFAULT NULL\n);\n\nCREATE TABLE IF NOT EXISTS chat_members (\n    user_id BIGINT,\n    chat_id BIGINT,\n    PRIMARY KEY (user_id, chat_id)\n);\n\nCREATE TABLE IF NOT EXISTS bans (\n    user_id BIGINT PRIMARY KEY,\n    reason TEXT,\n    until TEXT,\n    is_permanent INTEGER DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS games_history (\n    id BIGSERIAL PRIMARY KEY,\n    user_id BIGINT,\n    game_type TEXT,\n    bet BIGINT,\n    result TEXT,\n    win_amount BIGINT DEFAULT 0,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS game_stats (\n    user_id BIGINT PRIMARY KEY,\n    mines BIGINT DEFAULT 0,\n    tower BIGINT DEFAULT 0,\n    qwak BIGINT DEFAULT 0,\n    diamonds BIGINT DEFAULT 0,\n    crash BIGINT DEFAULT 0,\n    slots BIGINT DEFAULT 0,\n    bowling BIGINT DEFAULT 0,\n    dice BIGINT DEFAULT 0,\n    coin BIGINT DEFAULT 0,\n    chest BIGINT DEFAULT 0,\n    fishing BIGINT DEFAULT 0,\n    scratch BIGINT DEFAULT 0,\n    darts BIGINT DEFAULT 0,\n    basketball BIGINT DEFAULT 0,\n    football BIGINT DEFAULT 0,\n    roulette BIGINT DEFAULT 0,\n    twentyone BIGINT DEFAULT 0,\n    gold BIGINT DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS transfers_history (\n    id BIGSERIAL PRIMARY KEY,\n    sender_id BIGINT,\n    receiver_id BIGINT,\n    amount BIGINT,\n    commission BIGINT DEFAULT 0,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS active_games_state (\n    game_id BIGINT PRIMARY KEY,\n    owner_id BIGINT,\n    chat_id BIGINT,\n    game_type TEXT,\n    stage TEXT,\n    bet BIGINT,\n    mine_count INTEGER,\n    mine_positions TEXT,\n    revealed TEXT,\n    level INTEGER,\n    game_over INTEGER DEFAULT 0,\n    won INTEGER DEFAULT 0,\n    exploded_mine INTEGER DEFAULT NULL,\n    demo_mode INTEGER DEFAULT 0,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS promo_codes (\n    code TEXT PRIMARY KEY,\n    reward BIGINT,\n    total_activations INTEGER,\n    remaining_activations INTEGER,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS promo_activations (\n    code TEXT,\n    user_id BIGINT,\n    activated_at TEXT,\n    PRIMARY KEY (code, user_id)\n);\n\nCREATE TABLE IF NOT EXISTS top_bans (\n    user_id BIGINT PRIMARY KEY,\n    banned_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS transfer_bans (\n    user_id BIGINT PRIMARY KEY,\n    banned_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS mp_transfers_history (\n    id BIGSERIAL PRIMARY KEY,\n    sender_id BIGINT,\n    receiver_id BIGINT,\n    amount BIGINT,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS time_deposits (\n    id BIGSERIAL PRIMARY KEY,\n    user_id BIGINT,\n    amount BIGINT,\n    days INTEGER,\n    percent REAL,\n    profit BIGINT,\n    is_locked INTEGER DEFAULT 0,\n    status TEXT DEFAULT 'active',\n    created_at TEXT,\n    end_at TEXT,\n    created_at_dt TEXT,\n    end_at_dt TEXT\n);\n\nCREATE TABLE IF NOT EXISTS savings_accounts (\n    user_id BIGINT PRIMARY KEY,\n    balance BIGINT DEFAULT 0,\n    accumulated_interest REAL DEFAULT 0.0,\n    total_earned BIGINT DEFAULT 0,\n    last_accrual TEXT\n);\n\nCREATE TABLE IF NOT EXISTS savings_history (\n    id BIGSERIAL PRIMARY KEY,\n    user_id BIGINT,\n    type TEXT,\n    amount BIGINT,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS bank_settings (\n    user_id BIGINT PRIMARY KEY,\n    notifications_enabled INTEGER DEFAULT 1\n);\n\nCREATE TABLE IF NOT EXISTS referrals (\n    referrer_id BIGINT,\n    referral_id BIGINT PRIMARY KEY,\n    is_active INTEGER DEFAULT 0,\n    bonus_paid BIGINT DEFAULT 0,\n    earned_from_losses BIGINT DEFAULT 0,\n    joined_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS p2p_accounts (\n    user_id BIGINT PRIMARY KEY,\n    mcoin_balance BIGINT DEFAULT 0,\n    mp_balance BIGINT DEFAULT 0,\n    rating BIGINT DEFAULT 0,\n    deals_count INTEGER DEFAULT 0,\n    last_deposit_date TEXT DEFAULT NULL,\n    sell_order_active INTEGER DEFAULT 0,\n    sell_price BIGINT DEFAULT 0,\n    buy_order_active INTEGER DEFAULT 0,\n    buy_price BIGINT DEFAULT 0\n);\n\nCREATE TABLE IF NOT EXISTS p2p_deals_history (\n    id BIGSERIAL PRIMARY KEY,\n    buyer_id BIGINT,\n    seller_id BIGINT,\n    amount_mp BIGINT,\n    price_per_mp BIGINT,\n    total_mcoin BIGINT,\n    commission BIGINT DEFAULT 0,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS p2p_deal_ratings (\n    id BIGSERIAL PRIMARY KEY,\n    deal_id BIGINT,\n    rater_id BIGINT,\n    target_id BIGINT,\n    rating_change INTEGER,\n    created_at TEXT,\n    UNIQUE(deal_id, rater_id)\n);\n\nCREATE TABLE IF NOT EXISTS p2p_bot_stats (\n    id BIGSERIAL PRIMARY KEY,\n    user_id BIGINT,\n    amount_mp BIGINT,\n    amount_mcoin BIGINT,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS p2p_settings (\n    id BIGINT PRIMARY KEY,\n    official_sell_enabled INTEGER DEFAULT 1,\n    official_buy_enabled INTEGER DEFAULT 1,\n    official_sell_rate BIGINT DEFAULT 10000,\n    official_buy_rate BIGINT DEFAULT 10000,\n    rate_min BIGINT DEFAULT 7000,\n    rate_max BIGINT DEFAULT 29000,\n    interval_minutes INTEGER DEFAULT 150,\n    last_update TEXT DEFAULT NULL\n);\n\nCREATE TABLE IF NOT EXISTS user_completed_tasks (\n    user_id BIGINT,\n    task_id TEXT,\n    completed_at TEXT,\n    PRIMARY KEY (user_id, task_id)\n);\n\nCREATE TABLE IF NOT EXISTS p2p_promotions (\n    id BIGSERIAL PRIMARY KEY,\n    user_id BIGINT NOT NULL,\n    chat_id BIGINT NOT NULL,\n    chat_title TEXT NOT NULL,\n    chat_username TEXT,\n    chat_type TEXT NOT NULL,\n    price_per_sub INT NOT NULL,\n    total_subs INT NOT NULL,\n    completed_subs INT DEFAULT 0,\n    total_spent INT NOT NULL,\n    is_active BOOLEAN DEFAULT TRUE,\n    created_at TEXT NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS temple_user_stats (\n    user_id BIGINT PRIMARY KEY,\n    gifts_sent BIGINT DEFAULT 0,\n    stars_spent BIGINT DEFAULT 0,\n    updated_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS temple_gifts_history (\n    id BIGSERIAL PRIMARY KEY,\n    sender_id BIGINT,\n    receiver_id BIGINT,\n    gift_key TEXT,\n    gift_name TEXT,\n    stars_cost BIGINT,\n    comment TEXT,\n    created_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS demo_modes (\n    user_id BIGINT PRIMARY KEY,\n    enabled INTEGER DEFAULT 1,\n    updated_at TEXT NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS bot_user_settings (\n    user_id BIGINT PRIMARY KEY,\n    language TEXT DEFAULT 'ru',\n    bot_nickname TEXT DEFAULT NULL,\n    hide_top_username INTEGER DEFAULT 0,\n    demo_balance BIGINT DEFAULT NULL,\n    updated_at TEXT\n);\n\nCREATE TABLE IF NOT EXISTS checks_access (\n    user_id BIGINT PRIMARY KEY,\n    purchased_at TEXT NOT NULL\n);\n\nCREATE TABLE IF NOT EXISTS mcoin_checks (\n    check_code TEXT PRIMARY KEY,\n    creator_id BIGINT NOT NULL,\n    amount BIGINT NOT NULL,\n    total_activations INTEGER NOT NULL,\n    remaining_activations INTEGER NOT NULL,\n    created_at TEXT NOT NULL,\n    is_active INTEGER DEFAULT 1\n);\n\nCREATE TABLE IF NOT EXISTS check_activations (\n    check_code TEXT,\n    user_id BIGINT,\n    activated_at TEXT,\n    PRIMARY KEY (check_code, user_id)\n);\n\nCREATE TABLE IF NOT EXISTS admin_controls (\n    admin_id BIGINT PRIMARY KEY,\n    transfer_limit BIGINT DEFAULT 0,\n    issue_limit BIGINT DEFAULT 0,\n    mp_transfer_limit BIGINT DEFAULT 0,\n    mp_issue_limit BIGINT DEFAULT 0,\n    transfer_used BIGINT DEFAULT 0,\n    issue_used BIGINT DEFAULT 0,\n    mp_transfer_used BIGINT DEFAULT 0,\n    mp_issue_used BIGINT DEFAULT 0,\n    usage_date TEXT DEFAULT NULL,\n    can_ban INTEGER DEFAULT 1,\n    can_transfer INTEGER DEFAULT 1,\n    can_issue INTEGER DEFAULT 1,\n    can_set INTEGER DEFAULT 1,\n    can_mp_transfer INTEGER DEFAULT 1,\n    can_mp_issue INTEGER DEFAULT 1,\n    updated_by BIGINT DEFAULT NULL,\n    updated_at TEXT DEFAULT NULL\n);\n\nCREATE INDEX IF NOT EXISTS idx_mcoin_checks_creator ON mcoin_checks(creator_id);\nCREATE INDEX IF NOT EXISTS idx_check_activations_user ON check_activations(user_id);\n\nCREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC);\nCREATE INDEX IF NOT EXISTS idx_users_max_balance ON users(max_balance DESC);\nCREATE INDEX IF NOT EXISTS idx_users_games ON users(games DESC);\nCREATE INDEX IF NOT EXISTS idx_users_lost ON users(lost DESC);\nCREATE INDEX IF NOT EXISTS idx_users_username ON users(lower(username));\nCREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by);\nCREATE INDEX IF NOT EXISTS idx_users_mp_balance ON users(mp_balance DESC);\nCREATE INDEX IF NOT EXISTS idx_games_history_user ON games_history(user_id, id DESC);\nCREATE INDEX IF NOT EXISTS idx_transfers_history_users ON transfers_history(sender_id, receiver_id);\nCREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id);\nCREATE INDEX IF NOT EXISTS idx_p2p_deals_buyer ON p2p_deals_history(buyer_id);\nCREATE INDEX IF NOT EXISTS idx_p2p_deals_seller ON p2p_deals_history(seller_id);\nCREATE INDEX IF NOT EXISTS idx_savings_history_user ON savings_history(user_id, id DESC);\nCREATE INDEX IF NOT EXISTS idx_time_deposits_user_status ON time_deposits(user_id, status);\nCREATE INDEX IF NOT EXISTS idx_promo_activations_user ON promo_activations(user_id);\nCREATE INDEX IF NOT EXISTS idx_chat_members_chat ON chat_members(chat_id);\nCREATE INDEX IF NOT EXISTS idx_temple_gifts_sender ON temple_gifts_history(sender_id);\nCREATE INDEX IF NOT EXISTS idx_temple_gifts_receiver ON temple_gifts_history(receiver_id);\n\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS mp_transfer_limit BIGINT DEFAULT 0;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS mp_issue_limit BIGINT DEFAULT 0;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS mp_transfer_used BIGINT DEFAULT 0;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS mp_issue_used BIGINT DEFAULT 0;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS usage_date TEXT DEFAULT NULL;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_ban INTEGER DEFAULT 1;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_transfer INTEGER DEFAULT 1;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_issue INTEGER DEFAULT 1;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_set INTEGER DEFAULT 1;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_mp_transfer INTEGER DEFAULT 1;\nALTER TABLE admin_controls ADD COLUMN IF NOT EXISTS can_mp_issue INTEGER DEFAULT 1;\nALTER TABLE active_games_state ADD COLUMN IF NOT EXISTS demo_mode INTEGER DEFAULT 0;\n\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS twentyone BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS gold BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS dice BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS coin BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS chest BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS fishing BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS roulette BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS qwak BIGINT DEFAULT 0;\nALTER TABLE game_stats ADD COLUMN IF NOT EXISTS scratch BIGINT DEFAULT 0;\n"
+SQLITE_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS users (
+    user_id INTEGER PRIMARY KEY,
+    username TEXT DEFAULT NULL,
+    balance INTEGER DEFAULT 0,
+    games INTEGER DEFAULT 0,
+    lost INTEGER DEFAULT 0,
+    bonus_time TEXT DEFAULT NULL,
+    registered_at TEXT DEFAULT NULL,
+    mp_balance INTEGER DEFAULT 0,
+    mp_daily_transferred INTEGER DEFAULT 0,
+    mp_daily_date TEXT DEFAULT NULL,
+    ref_earned INTEGER DEFAULT 0,
+    ref_count INTEGER DEFAULT 0,
+    referred_by INTEGER DEFAULT NULL,
+    max_balance INTEGER DEFAULT 0,
+    first_name TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS chat_members (
+    user_id INTEGER,
+    chat_id INTEGER,
+    PRIMARY KEY (user_id, chat_id)
+);
+
+CREATE TABLE IF NOT EXISTS bans (
+    user_id INTEGER PRIMARY KEY,
+    reason TEXT,
+    until TEXT,
+    is_permanent INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS games_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    game_type TEXT,
+    bet INTEGER,
+    result TEXT,
+    win_amount INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS game_stats (
+    user_id INTEGER PRIMARY KEY,
+    mines INTEGER DEFAULT 0,
+    tower INTEGER DEFAULT 0,
+    qwak INTEGER DEFAULT 0,
+    diamonds INTEGER DEFAULT 0,
+    crash INTEGER DEFAULT 0,
+    slots INTEGER DEFAULT 0,
+    bowling INTEGER DEFAULT 0,
+    dice INTEGER DEFAULT 0,
+    coin INTEGER DEFAULT 0,
+    chest INTEGER DEFAULT 0,
+    fishing INTEGER DEFAULT 0,
+    scratch INTEGER DEFAULT 0,
+    darts INTEGER DEFAULT 0,
+    basketball INTEGER DEFAULT 0,
+    football INTEGER DEFAULT 0,
+    roulette INTEGER DEFAULT 0,
+    twentyone INTEGER DEFAULT 0,
+    gold INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS transfers_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER,
+    receiver_id INTEGER,
+    amount INTEGER,
+    commission INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS active_games_state (
+    game_id INTEGER PRIMARY KEY,
+    owner_id INTEGER,
+    chat_id INTEGER,
+    game_type TEXT,
+    stage TEXT,
+    bet INTEGER,
+    mine_count INTEGER,
+    mine_positions TEXT,
+    revealed TEXT,
+    level INTEGER,
+    game_over INTEGER DEFAULT 0,
+    won INTEGER DEFAULT 0,
+    exploded_mine INTEGER DEFAULT NULL,
+    demo_mode INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS promo_codes (
+    code TEXT PRIMARY KEY,
+    reward INTEGER,
+    total_activations INTEGER,
+    remaining_activations INTEGER,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS promo_activations (
+    code TEXT,
+    user_id INTEGER,
+    activated_at TEXT,
+    PRIMARY KEY (code, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS top_bans (
+    user_id INTEGER PRIMARY KEY,
+    banned_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS transfer_bans (
+    user_id INTEGER PRIMARY KEY,
+    banned_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS mp_transfers_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER,
+    receiver_id INTEGER,
+    amount INTEGER,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS time_deposits (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount INTEGER,
+    days INTEGER,
+    percent REAL,
+    profit INTEGER,
+    is_locked INTEGER DEFAULT 0,
+    status TEXT DEFAULT 'active',
+    created_at TEXT,
+    end_at TEXT,
+    created_at_dt TEXT,
+    end_at_dt TEXT
+);
+
+CREATE TABLE IF NOT EXISTS savings_accounts (
+    user_id INTEGER PRIMARY KEY,
+    balance INTEGER DEFAULT 0,
+    accumulated_interest REAL DEFAULT 0.0,
+    total_earned INTEGER DEFAULT 0,
+    last_accrual TEXT
+);
+
+CREATE TABLE IF NOT EXISTS savings_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    type TEXT,
+    amount INTEGER,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bank_settings (
+    user_id INTEGER PRIMARY KEY,
+    notifications_enabled INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS referrals (
+    referrer_id INTEGER,
+    referral_id INTEGER PRIMARY KEY,
+    is_active INTEGER DEFAULT 0,
+    bonus_paid INTEGER DEFAULT 0,
+    earned_from_losses INTEGER DEFAULT 0,
+    joined_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS p2p_accounts (
+    user_id INTEGER PRIMARY KEY,
+    mcoin_balance INTEGER DEFAULT 0,
+    mp_balance INTEGER DEFAULT 0,
+    rating INTEGER DEFAULT 0,
+    deals_count INTEGER DEFAULT 0,
+    last_deposit_date TEXT DEFAULT NULL,
+    sell_order_active INTEGER DEFAULT 0,
+    sell_price INTEGER DEFAULT 0,
+    buy_order_active INTEGER DEFAULT 0,
+    buy_price INTEGER DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS p2p_deals_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    buyer_id INTEGER,
+    seller_id INTEGER,
+    amount_mp INTEGER,
+    price_per_mp INTEGER,
+    total_mcoin INTEGER,
+    commission INTEGER DEFAULT 0,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS p2p_deal_ratings (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    deal_id INTEGER,
+    rater_id INTEGER,
+    target_id INTEGER,
+    rating_change INTEGER,
+    created_at TEXT,
+    UNIQUE(deal_id, rater_id)
+);
+
+CREATE TABLE IF NOT EXISTS p2p_bot_stats (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    amount_mp INTEGER,
+    amount_mcoin INTEGER,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS p2p_settings (
+    id INTEGER PRIMARY KEY,
+    official_sell_enabled INTEGER DEFAULT 1,
+    official_buy_enabled INTEGER DEFAULT 1,
+    official_sell_rate INTEGER DEFAULT 10000,
+    official_buy_rate INTEGER DEFAULT 10000,
+    rate_min INTEGER DEFAULT 7000,
+    rate_max INTEGER DEFAULT 29000,
+    interval_minutes INTEGER DEFAULT 150,
+    last_update TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS user_completed_tasks (
+    user_id INTEGER,
+    task_id TEXT,
+    completed_at TEXT,
+    PRIMARY KEY (user_id, task_id)
+);
+
+CREATE TABLE IF NOT EXISTS p2p_promotions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    chat_id INTEGER NOT NULL,
+    chat_title TEXT NOT NULL,
+    chat_username TEXT,
+    chat_type TEXT NOT NULL,
+    price_per_sub INT NOT NULL,
+    total_subs INT NOT NULL,
+    completed_subs INT DEFAULT 0,
+    total_spent INT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS temple_user_stats (
+    user_id INTEGER PRIMARY KEY,
+    gifts_sent INTEGER DEFAULT 0,
+    stars_spent INTEGER DEFAULT 0,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS temple_gifts_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    sender_id INTEGER,
+    receiver_id INTEGER,
+    gift_key TEXT,
+    gift_name TEXT,
+    stars_cost INTEGER,
+    comment TEXT,
+    created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS demo_modes (
+    user_id INTEGER PRIMARY KEY,
+    enabled INTEGER DEFAULT 1,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS bot_user_settings (
+    user_id INTEGER PRIMARY KEY,
+    language TEXT DEFAULT 'ru',
+    bot_nickname TEXT DEFAULT NULL,
+    hide_top_username INTEGER DEFAULT 0,
+    demo_balance INTEGER DEFAULT NULL,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS checks_access (
+    user_id INTEGER PRIMARY KEY,
+    purchased_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS mcoin_checks (
+    check_code TEXT PRIMARY KEY,
+    creator_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    total_activations INTEGER NOT NULL,
+    remaining_activations INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS check_activations (
+    check_code TEXT,
+    user_id INTEGER,
+    activated_at TEXT,
+    PRIMARY KEY (check_code, user_id)
+);
+
+CREATE TABLE IF NOT EXISTS bot_admin_role_overrides (
+    user_id INTEGER PRIMARY KEY,
+    enabled INTEGER NOT NULL,
+    updated_by INTEGER,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS admin_controls (
+    admin_id INTEGER PRIMARY KEY,
+    transfer_limit INTEGER DEFAULT 0,
+    issue_limit INTEGER DEFAULT 0,
+    mp_transfer_limit INTEGER DEFAULT 0,
+    mp_issue_limit INTEGER DEFAULT 0,
+    transfer_used INTEGER DEFAULT 0,
+    issue_used INTEGER DEFAULT 0,
+    mp_transfer_used INTEGER DEFAULT 0,
+    mp_issue_used INTEGER DEFAULT 0,
+    usage_date TEXT DEFAULT NULL,
+    can_ban INTEGER DEFAULT 1,
+    can_transfer INTEGER DEFAULT 1,
+    can_issue INTEGER DEFAULT 1,
+    can_set INTEGER DEFAULT 1,
+    can_mp_transfer INTEGER DEFAULT 1,
+    can_mp_issue INTEGER DEFAULT 1,
+    updated_by INTEGER DEFAULT NULL,
+    updated_at TEXT DEFAULT NULL
+);
 
 
-class _CaseInsensitiveColList(list):
-    def __contains__(self, item):
-        if isinstance(item, str):
-            item_lower = item.lower()
-            return any(isinstance(x, str) and x.lower() == item_lower for x in self)
-        return super().__contains__(item)
+"""
 
 
-class PGRow:
-    """Tuple + dict compatible DB row: row[0], row['name'], row.get('name')."""
-    __slots__ = ("_data", "_mapping", "_col_names")
-
-    def __init__(self, data_tuple: tuple, col_names: list):
-        self._data = tuple(data_tuple)
-        self._col_names = _CaseInsensitiveColList(col_names)
-        self._mapping = {name.lower(): val for name, val in zip(col_names, self._data)}
-
-    def __getitem__(self, item):
-        if isinstance(item, int):
-            return self._data[item]
-        if isinstance(item, slice):
-            return self._data[item]
-        if isinstance(item, str):
-            key = item.lower()
-            if key in self._mapping:
-                return self._mapping[key]
-            raise KeyError(f"Column '{item}' not found. Available: {self._col_names}")
-        raise TypeError(f"Invalid row key type: {type(item)}")
-
-    def __iter__(self):
-        return iter(self._data)
-
-    def __len__(self):
-        return len(self._data)
-
-    def __contains__(self, key):
-        if isinstance(key, str):
-            return key.lower() in self._mapping
-        return key in self._data
-
-    def __repr__(self):
-        return f"<PGRow {self._mapping}>"
-
-    def keys(self):
-        return self._col_names
-
-    def values(self):
-        return self._data
-
-    def items(self):
-        return list(zip(self._col_names, self._data))
-
-    def get(self, key: str, default=None):
-        return self._mapping.get(str(key).lower(), default)
+SQLITE_INDEXES = (
+    'CREATE INDEX IF NOT EXISTS idx_users_username ON users(LOWER(username))',
+    'CREATE INDEX IF NOT EXISTS idx_users_balance ON users(balance DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_users_max_balance ON users(max_balance DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_users_games ON users(games DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_users_lost ON users(lost DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_chat_members_chat ON chat_members(chat_id, user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_games_history_user ON games_history(user_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_transfers_sender ON transfers_history(sender_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_transfers_receiver ON transfers_history(receiver_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_mp_transfers_sender ON mp_transfers_history(sender_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_mp_transfers_receiver ON mp_transfers_history(receiver_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_deposits_user_status ON time_deposits(user_id, status, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_deposits_due ON time_deposits(status, end_at_dt)',
+    'CREATE INDEX IF NOT EXISTS idx_savings_history_user ON savings_history(user_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_referrals_referrer ON referrals(referrer_id, referral_id)',
+    'CREATE INDEX IF NOT EXISTS idx_p2p_deals_buyer ON p2p_deals_history(buyer_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_p2p_deals_seller ON p2p_deals_history(seller_id, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_p2p_bot_created ON p2p_bot_stats(created_at)',
+    'CREATE INDEX IF NOT EXISTS idx_promotions_user ON p2p_promotions(user_id, is_active, id DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_mcoin_checks_creator ON mcoin_checks(creator_id)',
+    'CREATE INDEX IF NOT EXISTS idx_check_activations_user ON check_activations(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_users_referred_by ON users(referred_by)',
+    'CREATE INDEX IF NOT EXISTS idx_users_mp_balance ON users(mp_balance DESC)',
+    'CREATE INDEX IF NOT EXISTS idx_transfers_history_users ON transfers_history(sender_id, receiver_id)',
+    'CREATE INDEX IF NOT EXISTS idx_time_deposits_user_status ON time_deposits(user_id, status)',
+    'CREATE INDEX IF NOT EXISTS idx_promo_activations_user ON promo_activations(user_id)',
+    'CREATE INDEX IF NOT EXISTS idx_temple_gifts_sender ON temple_gifts_history(sender_id)',
+    'CREATE INDEX IF NOT EXISTS idx_temple_gifts_receiver ON temple_gifts_history(receiver_id)',
+)
 
 
-SQLiteCompatibleRow = PGRow
-
-
-def _sqlite_greatest(*values):
-    clean = [v for v in values if v is not None]
-    return max(clean) if clean else None
-
-
-def _split_sql_statements(script: str):
-    parts = []
-    current = []
-    in_single = False
-    in_double = False
-    i = 0
-    while i < len(script):
-        ch = script[i]
-        if ch == "'" and not in_double:
-            if i + 1 < len(script) and script[i + 1] == "'":
-                current.append("''")
-                i += 2
-                continue
-            in_single = not in_single
-        elif ch == '"' and not in_single:
-            in_double = not in_double
-        if ch == ';' and not in_single and not in_double:
-            stmt = ''.join(current).strip()
-            if stmt:
-                parts.append(stmt)
-            current = []
-        else:
-            current.append(ch)
-        i += 1
-    tail = ''.join(current).strip()
-    if tail:
-        parts.append(tail)
-    return parts
-
-
-def _normalize_sqlite_query(query: str):
-    q = (query or "").strip().rstrip(';')
-    if not q:
-        return ""
-    upper = q.upper()
-    if upper.startswith("ALTER SEQUENCE") or upper.startswith("DO $DO$") or upper.startswith("DO $$"):
-        return None
-    q = re.sub(r'\bBIGSERIAL\s+PRIMARY\s+KEY\b', 'INTEGER PRIMARY KEY AUTOINCREMENT', q, flags=re.IGNORECASE)
-    q = re.sub(r'\bBIGSERIAL\b', 'INTEGER', q, flags=re.IGNORECASE)
-    q = re.sub(r'\bBIGINT\b', 'INTEGER', q, flags=re.IGNORECASE)
-    q = re.sub(r'\bBOOLEAN\b', 'INTEGER', q, flags=re.IGNORECASE)
-    q = re.sub(r'\bTRUE\b', '1', q, flags=re.IGNORECASE)
-    q = re.sub(r'\bFALSE\b', '0', q, flags=re.IGNORECASE)
-    return q
-
-
-class SQLiteCursorWrapper:
-    def __init__(self, adapter_conn):
-        self._adapter_conn = adapter_conn
-        self._cursor = adapter_conn._conn.cursor()
-        self.description = None
-        self.rowcount = -1
-        self.lastrowid = None
-
-    def _execute_one(self, query: str, params=None):
-        raw = (query or "").strip().rstrip(';')
-        if not raw:
-            return self
-
-        # SQLite does not support ADD COLUMN IF NOT EXISTS on many bundled versions.
-        m = re.match(r'ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)\s+(.+)$', raw, re.IGNORECASE | re.S)
-        if m:
-            table, column, rest = m.groups()
-            with self._adapter_conn._lock:
-                cols = [r[1].lower() for r in self._adapter_conn._conn.execute(f"PRAGMA table_info({table})").fetchall()]
-                if column.lower() in cols:
-                    self.rowcount = 0
-                    self.description = None
-                    return self
-                rest = _normalize_sqlite_query(rest) or rest
-                self._cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {rest}")
-                self.rowcount = self._cursor.rowcount
-                self.lastrowid = self._cursor.lastrowid
-                self.description = self._cursor.description
-                return self
-
-        q = _normalize_sqlite_query(raw)
-        if q is None:
-            self.rowcount = 0
-            self.description = None
-            return self
-
-        with self._adapter_conn._lock:
-            try:
-                if params is None:
-                    self._cursor.execute(q)
-                else:
-                    self._cursor.execute(q, params)
-                self.description = self._cursor.description
-                self.rowcount = self._cursor.rowcount
-                self.lastrowid = self._cursor.lastrowid
-                return self
-            except Exception as e:
-                logging.error(f"SQLite query error: {e} | Query: {q}")
-                raise
-
-    def execute(self, query: str, params=None):
-        if params is None and query and ';' in query.strip().rstrip(';'):
-            for stmt in _split_sql_statements(query):
-                self._execute_one(stmt, None)
-            return self
-        return self._execute_one(query, params)
-
-    def executemany(self, query: str, seq_of_params):
-        q = _normalize_sqlite_query(query)
-        if q is None:
-            return self
-        with self._adapter_conn._lock:
-            self._cursor.executemany(q, seq_of_params)
-            self.description = self._cursor.description
-            self.rowcount = self._cursor.rowcount
-            self.lastrowid = self._cursor.lastrowid
-            return self
-
-    def fetchone(self):
-        row = self._cursor.fetchone()
-        if row is None:
-            return None
-        if self._cursor.description:
-            cols = [d[0] for d in self._cursor.description]
-            return PGRow(tuple(row), cols)
-        return row
-
-    def fetchall(self):
-        rows = self._cursor.fetchall()
-        if not rows:
-            return []
-        if self._cursor.description:
-            cols = [d[0] for d in self._cursor.description]
-            return [PGRow(tuple(r), cols) for r in rows]
-        return rows
-
-    def close(self):
-        try:
-            self._cursor.close()
-        except Exception:
-            pass
-
-
-class SQLiteConnection:
-    def __init__(self, db_path: str = None):
-        self.db_path = db_path or SQLITE_DB_PATH
-        os.makedirs(os.path.dirname(os.path.abspath(self.db_path)), exist_ok=True)
+class SQLiteConnection(sqlite3.Connection):
+    def __init__(self, db_path=None):
+        db_path = db_path or SQLITE_DB_PATH
+        if sqlite3.sqlite_version_info < (3, 35, 0):
+            raise RuntimeError("SQLite 3.35 or newer is required")
+        if db_path != ":memory:":
+            os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
+        super().__init__(db_path, timeout=5.0, cached_statements=256)
+        self.row_factory = sqlite3.Row
         self._lock = threading.RLock()
-        self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self._conn.create_function("GREATEST", -1, _sqlite_greatest)
-        self._init_schema()
+        self._transaction_depth = 0
+        try:
+            self.execute("PRAGMA journal_mode=WAL")
+            self.execute("PRAGMA synchronous=NORMAL")
+            self.execute("PRAGMA foreign_keys=ON")
+            self.execute("PRAGMA busy_timeout=5000")
+            self.execute("PRAGMA cache_size=-8192")
+            self._init_schema()
+        except Exception:
+            self.close()
+            raise
 
     def _init_schema(self):
-        with self._lock:
-            cur = SQLiteCursorWrapper(self)
-            for stmt in _split_sql_statements(PG_SCHEMA_SQL):
-                try:
-                    cur.execute(stmt)
-                except Exception as e:
-                    logging.warning(f"Schema statement skipped: {e} | {stmt[:120]}")
-            self._conn.commit()
-
-    def cursor(self):
-        return SQLiteCursorWrapper(self)
-
-    def execute(self, query: str, params=None):
-        cur = self.cursor()
-        return cur.execute(query, params)
+        try:
+            self.execute("BEGIN IMMEDIATE")
+            for statement in SQLITE_SCHEMA_SQL.split(";"):
+                if statement.strip():
+                    self.execute(statement)
+            for table, body in re.findall(
+                r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\);",
+                SQLITE_SCHEMA_SQL, re.S,
+            ):
+                columns = {row[1].lower() for row in self.execute(f'PRAGMA table_info("{table}")')}
+                for declaration in body.splitlines():
+                    declaration = declaration.strip().rstrip(",")
+                    match = re.fullmatch(r"(\w+)\s+(.+)", declaration)
+                    if not match:
+                        continue
+                    column, definition = match.groups()
+                    if column.upper() in {"PRIMARY", "UNIQUE", "FOREIGN", "CHECK", "CONSTRAINT"}:
+                        continue
+                    if column.lower() not in columns:
+                        self.execute(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {definition}')
+            for statement in SQLITE_INDEXES:
+                self.execute(statement)
+            super().commit()
+        except Exception:
+            super().rollback()
+            raise
 
     def commit(self):
-        with self._lock:
-            self._conn.commit()
+        if not self._transaction_depth:
+            super().commit()
 
     def rollback(self):
-        with self._lock:
-            self._conn.rollback()
-
-    def create_function(self, name, num_args, func):
-        self._conn.create_function(name, num_args, func)
-
-    def close(self):
-        with self._lock:
-            self._conn.close()
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        if exc_type:
-            self.rollback()
+        if self._transaction_depth:
+            self.execute(f"ROLLBACK TO SAVEPOINT transaction_{self._transaction_depth}")
         else:
-            self.commit()
+            super().rollback()
 
 
 _global_db_connection = None
@@ -371,7 +537,7 @@ async def init_db_pool():
 async def execute(query: str, *args):
     db = get_db_connection()
     cur = db.cursor()
-    cur.execute(query, args if args else None)
+    cur.execute(query, args)
     db.commit()
     return cur
 
@@ -379,17 +545,22 @@ async def execute(query: str, *args):
 async def fetchrow(query: str, *args):
     db = get_db_connection()
     cur = db.cursor()
-    cur.execute(query, args if args else None)
-    row = cur.fetchone()
-    return dict(row.items()) if isinstance(row, PGRow) else row
+    try:
+        cur.execute(query, args)
+        row = cur.fetchone()
+        return dict(row) if row is not None else None
+    finally:
+        cur.close()
 
 
 async def fetch(query: str, *args):
     db = get_db_connection()
     cur = db.cursor()
-    cur.execute(query, args if args else None)
-    rows = cur.fetchall()
-    return [dict(r.items()) if isinstance(r, PGRow) else r for r in rows]
+    try:
+        cur.execute(query, args)
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        cur.close()
 
 
 async def fetchval(query: str, *args):
@@ -401,10 +572,10 @@ async def fetchval(query: str, *args):
     return None
 
 
-# --- INLINE IN-MEMORY REDIS FALLBACK (replaces redis_client.py) ---
 _redis_pool = None
-_in_memory_cache = {}
+_in_memory_cache = OrderedDict()
 _in_memory_expire_at = {}
+_cache_last_cleanup = 0.0
 
 
 async def get_redis():
@@ -419,6 +590,17 @@ def _json_serializer(obj):
     return str(obj)
 
 
+def _purge_expired_cache(now):
+    global _cache_last_cleanup
+    if now - _cache_last_cleanup < 60:
+        return
+    for key, expiry in tuple(_in_memory_expire_at.items()):
+        if now >= expiry:
+            _in_memory_cache.pop(key, None)
+            _in_memory_expire_at.pop(key, None)
+    _cache_last_cleanup = now
+
+
 async def redis_set(key: str, value, expire_sec: int = None):
     if isinstance(value, (str, int, float)):
         val_str = str(value)
@@ -427,22 +609,31 @@ async def redis_set(key: str, value, expire_sec: int = None):
             val_str = json.dumps(value, default=_json_serializer, ensure_ascii=False)
         except Exception:
             val_str = str(value)
+    now = time.time()
+    _purge_expired_cache(now)
     _in_memory_cache[key] = val_str
+    _in_memory_cache.move_to_end(key)
     if expire_sec:
-        _in_memory_expire_at[key] = time.time() + expire_sec
+        _in_memory_expire_at[key] = now + expire_sec
     else:
         _in_memory_expire_at.pop(key, None)
+    if len(_in_memory_cache) > CACHE_LIMIT:
+        evicted, _ = _in_memory_cache.popitem(last=False)
+        _in_memory_expire_at.pop(evicted, None)
     return True
 
 
 async def redis_get(key: str, default=None):
+    now = time.time()
+    _purge_expired_cache(now)
     exp = _in_memory_expire_at.get(key)
-    if exp is not None and time.time() > exp:
+    if exp is not None and now >= exp:
         _in_memory_cache.pop(key, None)
         _in_memory_expire_at.pop(key, None)
         return default
     val = _in_memory_cache.get(key)
     if val is not None:
+        _in_memory_cache.move_to_end(key)
         try:
             return json.loads(val)
         except Exception:
@@ -475,56 +666,53 @@ conn = get_db_connection()
 cursor = conn.cursor()
 
 
+def db_transaction(function):
+    @wraps(function)
+    def wrapped(*args, **kwargs):
+        with conn._lock:
+            conn._transaction_depth += 1
+            savepoint = f"transaction_{conn._transaction_depth}"
+            opened = False
+            try:
+                conn.execute(f"SAVEPOINT {savepoint}")
+                opened = True
+                result = function(*args, **kwargs)
+                failed = result is False or (isinstance(result, tuple) and result and result[0] is False)
+                if failed:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                return result
+            except Exception:
+                if opened:
+                    conn.execute(f"ROLLBACK TO SAVEPOINT {savepoint}")
+                    conn.execute(f"RELEASE SAVEPOINT {savepoint}")
+                raise
+            finally:
+                conn._transaction_depth -= 1
+    return wrapped
+
+
 try:
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS user_completed_tasks (
-        user_id BIGINT,
-        task_id TEXT,
-        completed_at TEXT,
-        PRIMARY KEY (user_id, task_id)
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS p2p_promotions (
-        id BIGSERIAL PRIMARY KEY,
-        user_id BIGINT NOT NULL,
-        chat_id BIGINT NOT NULL,
-        chat_title TEXT NOT NULL,
-        chat_username TEXT,
-        chat_type TEXT NOT NULL,
-        price_per_sub INT NOT NULL,
-        total_subs INT NOT NULL,
-        completed_subs INT DEFAULT 0,
-        total_spent INT NOT NULL,
-        is_active BOOLEAN DEFAULT TRUE,
-        created_at TEXT NOT NULL
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bot_admin_role_overrides (
-        user_id BIGINT PRIMARY KEY,
-        enabled INTEGER NOT NULL,
-        updated_by BIGINT,
-        updated_at TEXT
-    )
-    """)
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS bot_user_settings (
-        user_id BIGINT PRIMARY KEY,
-        language TEXT DEFAULT 'ru',
-        bot_nickname TEXT DEFAULT NULL,
-        hide_top_username INTEGER DEFAULT 0,
-        demo_balance BIGINT DEFAULT NULL,
-        updated_at TEXT
-    )
-    """)
     cursor.execute("UPDATE users SET max_balance = balance WHERE max_balance IS NULL OR max_balance < balance")
     conn.commit()
-except Exception:
-    pass
+except sqlite3.Error:
+    conn.rollback()
+    logging.exception("Could not initialize balance records")
+    raise
 
-_known_usernames = {}
-_known_names = {}
+CACHE_LIMIT = 4096
+_settings_cache = OrderedDict()
+_identity_cache = OrderedDict()
+_known_usernames = OrderedDict()
+_known_names = OrderedDict()
+
+
+def _cache_put(cache, key, value):
+    cache[key] = value
+    cache.move_to_end(key)
+    if len(cache) > CACHE_LIMIT:
+        cache.popitem(last=False)
+
 _known_chat_members = set()
 _banned_users_cache = {}
 _top_banned_users = set()
@@ -646,7 +834,6 @@ def is_admin(user_id):
 
 
 def is_admin_unlimited_bet(user_id):
-    # Game maximums still apply to regular users; admins/owners may bet above them.
     return is_admin(user_id)
 
 
@@ -885,6 +1072,11 @@ TRANSLATIONS["kk"].update({"catalog_fast_title": "ЖЫЛДАМ ОЙЫНДАР", 
 
 
 def get_user_settings(user_id):
+    user_id = int(user_id)
+    cached = _settings_cache.get(user_id)
+    if cached is not None:
+        _settings_cache.move_to_end(user_id)
+        return cached.copy()
     defaults = {
         "user_id": int(user_id),
         "language": "ru",
@@ -899,6 +1091,7 @@ def get_user_settings(user_id):
         )
         row = cursor.fetchone()
         if not row:
+            _cache_put(_settings_cache, user_id, defaults.copy())
             return defaults
         defaults.update({
             "language": row[0] if row[0] in LANGUAGE_NAMES else "ru",
@@ -906,8 +1099,9 @@ def get_user_settings(user_id):
             "hide_top_username": bool(row[2]),
             "demo_balance": int(row[3]) if row[3] is not None else None,
         })
-    except Exception:
-        pass
+        _cache_put(_settings_cache, user_id, defaults.copy())
+    except sqlite3.Error:
+        logging.exception("Could not load settings for user %s", user_id)
     return defaults
 
 
@@ -935,8 +1129,11 @@ def set_user_settings(user_id, **values):
             ),
         )
         conn.commit()
+        _cache_put(_settings_cache, int(user_id), current.copy())
         return True
-    except Exception:
+    except sqlite3.Error:
+        conn.rollback()
+        logging.exception("Could not save settings for user %s", user_id)
         return False
 
 
@@ -1087,7 +1284,6 @@ def admin_has_permission(user_id, permission):
 
 
 def reserve_admin_usage(admin_id, operation, amount):
-    # Reserve an admin's daily mCoin transfer/issue allowance.
     amount = int(amount or 0)
     if amount <= 0 or is_owner(admin_id) or not is_admin(admin_id):
         return True, None
@@ -1216,7 +1412,7 @@ def update_user(user_id, balance=None, games=None, lost=None, bonus_time=None, u
             updates.append("balance = ?")
             params.append(balance)
             if max_balance is None:
-                updates.append("max_balance = GREATEST(COALESCE(max_balance, 0), ?)")
+                updates.append("max_balance = MAX(COALESCE(max_balance, 0), ?)")
                 params.append(balance)
         if max_balance is not None:
             updates.append("max_balance = ?")
@@ -1294,46 +1490,35 @@ def get_user_by_username(username):
         return None
 
 
-def get_user_display_name(user_id):
+def get_user_display_name(user_id, first_name=None):
+    user_id = int(user_id)
     custom_name = get_user_settings(user_id).get("bot_nickname")
     if custom_name:
-        return custom_name
+        return str(custom_name)
     cached_name = _known_names.get(user_id)
     if cached_name:
         return cached_name
+    username = None
     try:
         cursor.execute('SELECT first_name, username FROM users WHERE user_id = ?', (user_id,))
         row = cursor.fetchone()
         if row:
             if row[0]:
-                _known_names[user_id] = row[0]
+                _cache_put(_known_names, user_id, row[0])
                 return row[0]
-            if row[1]:
-                return row[1]
-        return f"ID:{user_id}"
-    except Exception:
-        return f"ID:{user_id}"
+            username = row[1]
+    except sqlite3.Error:
+        logging.exception("Could not load display name for user %s", user_id)
+    if first_name and first_name != "Мины Бот" and not str(first_name).lower().endswith("bot"):
+        return str(first_name)
+    return username or f"ID:{user_id}"
 
 
 def get_user_mention(user_id, first_name=None):
-    custom_name = get_user_settings(user_id).get("bot_nickname")
-    if custom_name:
-        return f'<a href="tg://user?id={user_id}">{html.escape(str(custom_name))}</a>'
-    if first_name and first_name != "Мины Бот" and not str(first_name).lower().endswith("bot"):
-        clean_name = html.escape(str(first_name))
-        return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
-    cached_uname = _known_usernames.get(user_id)
-    if cached_uname:
-        return f'<a href="tg://user?id={user_id}">@{html.escape(cached_uname)}</a>'
-    try:
-        cursor.execute('SELECT username FROM users WHERE user_id = ?', (user_id,))
-        row = cursor.fetchone()
-        if row and row[0]:
-            _known_usernames[user_id] = row[0]
-            return f'<a href="tg://user?id={user_id}">@{html.escape(row[0])}</a>'
-    except Exception:
-        pass
-    return f'<a href="tg://user?id={user_id}">Игрок</a>'
+    name = get_user_display_name(user_id, first_name)
+    if name == f"ID:{int(user_id)}":
+        name = "Игрок"
+    return f'<a href="tg://user?id={int(user_id)}">{html.escape(str(name))}</a>'
 
 
 def add_transfer_history(sender_id, receiver_id, amount, commission=0, created_at_str=None):
@@ -1398,20 +1583,33 @@ def get_last_game(user_id):
 
 
 def save_username(user_id, username=None, first_name=None):
-    if first_name and first_name != "Мины Бот" and not str(first_name).lower().endswith("bot"):
-        _known_names[user_id] = first_name
-    if username:
-        _known_usernames[user_id] = username
+    user_id = int(user_id)
+    identity = (username, first_name)
+    if _identity_cache.get(user_id) == identity:
+        return
     try:
-        if first_name and username:
-            cursor.execute('UPDATE users SET username = ?, first_name = ? WHERE user_id = ?', (username, first_name, user_id))
-        elif first_name:
-            cursor.execute('UPDATE users SET first_name = ? WHERE user_id = ?', (first_name, user_id))
-        elif username:
-            cursor.execute('UPDATE users SET username = ? WHERE user_id = ?', (username, user_id))
+        cursor.execute(
+            """
+            INSERT INTO users (user_id, username, first_name, registered_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET
+                username = excluded.username,
+                first_name = COALESCE(excluded.first_name, users.first_name)
+            """,
+            (user_id, username, first_name, datetime.now().strftime("%d.%m.%Y %H:%M")),
+        )
         conn.commit()
-    except Exception:
-        pass
+    except sqlite3.Error:
+        conn.rollback()
+        logging.exception("Could not save Telegram identity for user %s", user_id)
+        return
+    _cache_put(_identity_cache, user_id, identity)
+    if first_name:
+        _cache_put(_known_names, user_id, first_name)
+    if username:
+        _cache_put(_known_usernames, user_id, username)
+    else:
+        _known_usernames.pop(user_id, None)
 
 
 def check_user_ban(user_id):
@@ -1622,6 +1820,7 @@ def get_user_bank_total(user_id):
         return 0
 
 
+@db_transaction
 def create_time_deposit(user_id, amount, days, is_locked=0):
     try:
         if amount <= 0:
@@ -1711,6 +1910,7 @@ def get_user_time_deposits_history_count(user_id):
         return 0
 
 
+@db_transaction
 def withdraw_time_deposit(dep_id, user_id):
     try:
         cursor.execute("SELECT amount, is_locked, status FROM time_deposits WHERE id = ? AND user_id = ?", (dep_id, user_id))
@@ -1727,13 +1927,14 @@ def withdraw_time_deposit(dep_id, user_id):
         if cursor.rowcount == 0:
             return False, "Депозит уже закрыт или заблокирован!"
 
-        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         conn.commit()
         return True, amount
     except Exception as e:
         return False, str(e)
 
 
+@db_transaction
 def withdraw_all_time_deposits(user_id):
     try:
         cursor.execute("SELECT id, amount, is_locked FROM time_deposits WHERE user_id = ? AND status = 'active' AND is_locked = 0", (user_id,))
@@ -1750,7 +1951,7 @@ def withdraw_all_time_deposits(user_id):
         if total_withdrawn <= 0:
             return False, "Нет доступных для досрочного снятия депозитов!"
 
-        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_withdrawn, total_withdrawn, user_id))
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_withdrawn, total_withdrawn, user_id))
         conn.commit()
         return True, total_withdrawn
     except Exception as e:
@@ -1775,6 +1976,7 @@ def get_savings_account(user_id):
         return {"balance": 0, "accumulated_interest": 0.0, "total_earned": 0, "last_accrual": None}
 
 
+@db_transaction
 def deposit_to_savings(user_id, amount):
     try:
         if amount <= 0:
@@ -1800,6 +2002,7 @@ def deposit_to_savings(user_id, amount):
         return False, str(e)
 
 
+@db_transaction
 def withdraw_from_savings(user_id, amount):
     try:
         if amount <= 0:
@@ -1817,14 +2020,14 @@ def withdraw_from_savings(user_id, amount):
         cursor.execute('''
             UPDATE savings_accounts
             SET balance = balance - ?,
-                accumulated_interest = GREATEST(0.0, accumulated_interest - ?),
+                accumulated_interest = MAX(0.0, COALESCE(accumulated_interest, 0.0) - ?),
                 total_earned = total_earned + ?
             WHERE user_id = ? AND balance >= ?
         ''', (balance_to_wd, interest_to_wd, interest_to_wd, user_id, balance_to_wd))
         if cursor.rowcount == 0:
             return False, "Недостаточно средств на накопительном счете!"
 
-        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         now_str = datetime.now().strftime("%d-%m-%y %H:%M")
         cursor.execute("INSERT INTO savings_history (user_id, type, amount, created_at) VALUES (?, 'withdraw', ?, ?)", (user_id, amount, now_str))
         conn.commit()
@@ -1852,7 +2055,6 @@ def get_savings_history_count(user_id):
         return 0
 
 
-# --- REFERRAL SYSTEM HELPERS ---
 def register_referral(referrer_id, referral_id):
     try:
         if referrer_id == referral_id:
@@ -2018,7 +2220,7 @@ async def save_username_middleware(handler, event, data):
             msg_text = event.text or event.caption or ""
             
             if is_bot_command(msg_text, chat_type):
-                raw_user_name = event.from_user.first_name or "Игрок"
+                raw_user_name = get_user_display_name(event.from_user.id, event.from_user.first_name) or "Игрок"
                 clean_user_name = html.escape(raw_user_name)
                 user_link = f'<a href="tg://user?id={event.from_user.id}">{clean_user_name}</a>'
                 await event.reply(
@@ -2721,6 +2923,7 @@ async def check_expired_games_task():
 
 
 async def show_catalog(message_or_callback, user_id, user_name, chat_id, is_group=False, edit=False):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -2798,6 +3001,7 @@ async def show_catalog(message_or_callback, user_id, user_name, chat_id, is_grou
 
 
 async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -2862,6 +3066,7 @@ async def show_fast_games_catalog(callback: types.CallbackQuery, user_id, user_n
 
 
 async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_name, chat_id, is_group=False):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -2953,6 +3158,24 @@ async def show_modes_games_catalog(callback: types.CallbackQuery, user_id, user_
         user_messages[key].append(msg.message_id)
 
 
+async def _get_top_identity(user_id, settings):
+    if settings.get("bot_nickname"):
+        return settings["bot_nickname"], None
+    cursor.execute("SELECT first_name, username FROM users WHERE user_id = ?", (user_id,))
+    row = cursor.fetchone()
+    if row and row[0]:
+        return row[0], row[1]
+    if row and row[1] and not settings.get("hide_top_username"):
+        return row[1], row[1]
+    try:
+        user = await bot.get_chat(user_id)
+        save_username(user_id, user.username, user.first_name)
+        return user.first_name or "Пользователь", user.username
+    except Exception:
+        name = "Пользователь" if settings.get("hide_top_username") else get_user_display_name(user_id)
+        return name, None
+
+
 async def show_top(message, chat_id=None):
     user_id = message.from_user.id
 
@@ -2985,13 +3208,7 @@ async def show_top(message, chat_id=None):
 
     for i, (uid, balance) in enumerate(top_users):
         settings = get_user_settings(uid)
-        try:
-            user = await bot.get_chat(uid)
-            raw_name = user.first_name or "Пользователь"
-            username = getattr(user, "username", None)
-        except Exception:
-            raw_name = "Пользователь" if settings.get("hide_top_username") else get_user_display_name(uid)
-            username = None
+        raw_name, username = await _get_top_identity(uid, settings)
         if settings.get("bot_nickname"):
             raw_name = settings["bot_nickname"]
         elif username and not settings.get("hide_top_username"):
@@ -3010,13 +3227,7 @@ async def show_top(message, chat_id=None):
             caller_emoji = "🎖️"
 
         settings = get_user_settings(user_id)
-        try:
-            user = await bot.get_chat(user_id)
-            raw_name = user.first_name or "Пользователь"
-            username = getattr(user, "username", None)
-        except Exception:
-            raw_name = "Пользователь" if settings.get("hide_top_username") else get_user_display_name(user_id)
-            username = None
+        raw_name, username = await _get_top_identity(user_id, settings)
         if settings.get("bot_nickname"):
             raw_name = settings["bot_nickname"]
         elif username and not settings.get("hide_top_username"):
@@ -3042,6 +3253,7 @@ def get_active_unplayed_games(user_id):
 
 
 async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -3142,7 +3354,7 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
 @dp.message(Command("history", "история"))
 @dp.message(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"])
 async def cmd_history(message: types.Message):
-    await show_recent_games_menu(message, message.from_user.id, message.from_user.first_name, page=1)
+    await show_recent_games_menu(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), page=1)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("recent_page_"))
@@ -3152,20 +3364,20 @@ async def process_recent_page(callback: types.CallbackQuery):
         page = int(callback.data.split("_")[-1])
     except Exception:
         page = 1
-    await show_recent_games_menu(callback, callback.from_user.id, callback.from_user.first_name, page=page)
+    await show_recent_games_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=page)
 
 
 @dp.callback_query(lambda c: c.data == "back_to_history_menu")
 async def process_back_to_history_menu(callback: types.CallbackQuery):
     await callback.answer()
-    await show_recent_games_menu(callback, callback.from_user.id, callback.from_user.first_name, page=1)
+    await show_recent_games_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=1)
 
 
 @dp.callback_query(lambda c: c.data == "history_stats")
 async def process_history_stats(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    user_name = html.escape(callback.from_user.first_name or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     stats = get_user_stats(user_id)
@@ -3235,7 +3447,7 @@ async def process_history_games(callback: types.CallbackQuery):
         page = 1
 
     user_id = callback.from_user.id
-    user_name = html.escape(callback.from_user.first_name or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     total_count = get_user_history_count(user_id)
@@ -3387,7 +3599,6 @@ async def process_resume_game(callback: types.CallbackQuery):
         await callback.answer("Неизвестный тип игры!", show_alert=True)
 
 
-# --- CHECKS (PRIVATE ONLY) ---
 CHECKS_ACCESS_PRICE = 100000
 CHECK_MAX_ACTIVATIONS = 1000
 CHECK_MAX_AMOUNT = 10_000_000
@@ -3667,7 +3878,6 @@ async def process_checks_back(callback: types.CallbackQuery):
         pass
 
 
-# --- START COMMAND ---
 
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -3688,11 +3898,11 @@ async def cmd_start(message: types.Message):
             except Exception:
                 pass
         elif payload == "p2p":
-            await show_p2p_main(message, user_id=user_id, first_name=message.from_user.first_name)
+            await show_p2p_main(message, user_id=user_id, first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
         elif payload == "promote":
             promote_user_states.pop(user_id, None)
-            await send_promote_main_menu(message.chat.id, user_id, message.from_user.first_name)
+            await send_promote_main_menu(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
         elif payload in ["earn", "earning"]:
             text, keyboard = build_earn_menu(user_id)
@@ -3774,7 +3984,7 @@ async def cmd_add(message: types.Message):
 
     if message.reply_to_message:
         target_user_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name
+        target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     else:
         target_user_id = user_id
         target_name = "ваш"
@@ -3788,7 +3998,7 @@ async def cmd_add(message: types.Message):
 
     if update_user(target_user_id, balance=new_balance):
         await message.reply(
-            f'<i>✅ Successfully! На баланс пользователя {target_name} добавлено {format_number(amount)} mCoin\n'
+            f'<i>✅ Successfully! На баланс пользователя {html.escape(get_user_display_name(target_user_id, target_name) if target_name != "ваш" else target_name)} добавлено {format_number(amount)} mCoin\n'
             f'Текущий баланс: {format_number(new_balance)} mCoin</i>',
             parse_mode=ParseMode.HTML
         )
@@ -3817,7 +4027,7 @@ async def cmd_set(message: types.Message):
 
     if message.reply_to_message:
         target_user_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name
+        target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     else:
         target_user_id = user_id
         target_name = "ваш"
@@ -3831,7 +4041,7 @@ async def cmd_set(message: types.Message):
     if update_user(target_user_id, balance=amount):
         user_data = get_user(target_user_id)
         await message.reply(
-            f'<i>✅ Successfully! Баланс пользователя {target_name} установлен на {format_number(user_data["balance"])} mCoin</i>',
+            f'<i>✅ Successfully! Баланс пользователя {html.escape(get_user_display_name(target_user_id, target_name) if target_name != "ваш" else target_name)} установлен на {format_number(user_data["balance"])} mCoin</i>',
             parse_mode=ParseMode.HTML
         )
     else:
@@ -3869,7 +4079,7 @@ async def cmd_setrec(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or f"ID:{target_user_id}"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or f"ID:{target_user_id}"
         if len(parts) >= 3:
             field_arg = parts[1]
             val_arg = parts[2]
@@ -3937,9 +4147,9 @@ async def cmd_setrec(message: types.Message):
 
     kwargs = {col_name: amount}
     if update_user(target_user_id, **kwargs):
-        admin_name = html.escape(message.from_user.first_name or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.reply(
             f'<i>{admin_link}, успешно обновлен рекорд для {target_link}!\n'
             f'👑 <b>{col_title}:</b> {format_number(amount)}</i>',
@@ -3966,7 +4176,7 @@ async def cmd_delrec(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or f"ID:{target_user_id}"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or f"ID:{target_user_id}"
         if len(parts) >= 2:
             field_arg = parts[1]
     elif len(parts) >= 2:
@@ -3993,7 +4203,7 @@ async def cmd_delrec(message: types.Message):
                 col, _ = parse_record_field(target_arg)
                 if col:
                     target_user_id = user_id
-                    target_name = message.from_user.first_name or "Админ"
+                    target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ"
                     field_arg = target_arg
                 else:
                     await message.reply(f"<i>Пользователь {target_arg} не найден в базе бота!</i>", parse_mode=ParseMode.HTML)
@@ -4028,9 +4238,9 @@ async def cmd_delrec(message: types.Message):
         desc = f"Рекорд «{col_title}» сброшен в {format_number(val)}"
 
     if success:
-        admin_name = html.escape(message.from_user.first_name or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.reply(
             f'<i>{admin_link}, для пользователя {target_link} успешно выполнено:\n'
             f'🗑 {desc} ✅</i>',
@@ -4084,17 +4294,6 @@ async def cmd_sn(message: types.Message):
         cursor.execute("DELETE FROM transfer_bans")
         _top_banned_users.clear()
         _transfer_banned_users.clear()
-        try:
-            cursor.execute("ALTER SEQUENCE IF EXISTS games_history_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS transfers_history_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS mp_transfers_history_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS p2p_deals_history_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS p2p_deal_ratings_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS p2p_bot_stats_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS time_deposits_id_seq RESTART WITH 1")
-            cursor.execute("ALTER SEQUENCE IF EXISTS savings_history_id_seq RESTART WITH 1")
-        except Exception:
-            pass
         conn.commit()
 
         cursor.execute("SELECT COUNT(*) FROM users")
@@ -4127,7 +4326,7 @@ async def cmd_unbd(message: types.Message):
 
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name or f"ID:{target_user_id}"
+        target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name) or f"ID:{target_user_id}"
     elif len(parts) > 1:
         target_arg = parts[1]
         if target_arg.startswith("@"):
@@ -4173,12 +4372,14 @@ async def cmd_unbd(message: types.Message):
         conn.commit()
 
         _known_usernames.pop(target_user_id, None)
+        _known_names.pop(target_user_id, None)
+        _identity_cache.pop(target_user_id, None)
         _banned_users_cache.pop(target_user_id, None)
         _top_banned_users.discard(target_user_id)
         _transfer_banned_users.discard(target_user_id)
         active_games.pop(target_user_id, None)
 
-        clean_name = html.escape(str(target_name))
+        clean_name = html.escape(get_user_display_name(target_user_id, target_name))
         await message.reply(
             f"<i>✅ Successfully! Пользователь <b>{clean_name}</b> (<code>{target_user_id}</code>) полностью удален из базы данных!</i>",
             parse_mode=ParseMode.HTML
@@ -4212,7 +4413,6 @@ async def cmd_cprom(message: types.Message):
     reward = None
     promo_name = ""
 
-    # Check if last argument is integer activations
     if len(args) >= 4 and args[-1].isdigit():
         activations = int(args[-1])
         if activations <= 0:
@@ -4438,7 +4638,7 @@ async def event_timer(chat_id, message_id):
             for uid in event_participants.keys():
                 try:
                     user = await bot.get_chat(uid)
-                    clean_first_name = html.escape(user.first_name or "User")
+                    clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
                     participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
                 except Exception:
                     participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
@@ -4521,7 +4721,7 @@ async def event_timeout(chat_id, message_id):
     for uid in event_participants.keys():
         try:
             user = await bot.get_chat(uid)
-            clean_first_name = html.escape(user.first_name or "User")
+            clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
             participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
         except Exception:
             participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
@@ -4566,7 +4766,7 @@ async def process_event_join(callback: types.CallbackQuery):
     for uid in event_participants.keys():
         try:
             user = await bot.get_chat(uid)
-            clean_first_name = html.escape(user.first_name or "User")
+            clean_first_name = html.escape(get_user_display_name(user.id, user.first_name) or "User")
             participants_list.append(f'<a href="tg://user?id={uid}">{clean_first_name}</a>')
         except Exception:
             participants_list.append(f'<a href="tg://user?id={uid}">User</a>')
@@ -4633,7 +4833,7 @@ async def cmd_i(message: types.Message):
         update_user(user_id, balance=user_data["balance"] + event_prize)
 
         await message.reply(
-            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji> <a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a> <b>угадал загаданное число и получил {format_number(event_prize)} mCoin!\n'
+            f'<tg-emoji emoji-id="5436040291507247633">🎉</tg-emoji> <a href="tg://user?id={user_id}">{html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")}</a> <b>угадал загаданное число и получил {format_number(event_prize)} mCoin!\n'
             f'Загаданное число было: <code>{event_number}</code></b>',
             parse_mode=ParseMode.HTML
         )
@@ -4645,7 +4845,7 @@ async def cmd_i(message: types.Message):
         for uid, attempts in event_participants.items():
             try:
                 user = await bot.get_chat(uid)
-                name = user.first_name
+                name = get_user_display_name(user.id, user.first_name)
             except Exception:
                 name = "User"
             clean_p_name = html.escape(str(name))
@@ -4692,11 +4892,8 @@ async def cmd_top_chat(message: types.Message):
 
 async def show_records(message: types.Message):
     async def get_plain_user_name(uid: int):
-        try:
-            user = await bot.get_chat(uid)
-            raw_name = user.first_name or "Пользователь"
-        except Exception:
-            raw_name = get_user_display_name(uid)
+        settings = get_user_settings(uid)
+        raw_name, _ = await _get_top_identity(uid, settings)
         return html.escape(str(raw_name))
 
     try:
@@ -4772,10 +4969,9 @@ async def cmd_records(message: types.Message):
 @dp.message(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"])
 async def cmd_game(message: types.Message):
     is_group = message.chat.type in ["group", "supergroup"]
-    await show_catalog(message, message.from_user.id, message.from_user.first_name, message.chat.id, is_group)
+    await show_catalog(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), message.chat.id, is_group)
 
 
-# --- MINES GAME ---
 
 @dp.message(Command("mines"))
 @dp.message(lambda message: message.text and re.match(r'^(мины|mines)\s*', message.text, re.IGNORECASE))
@@ -4839,7 +5035,6 @@ async def cmd_mines(message: types.Message):
         await show_mines_info(message, user_id)
 
 
-# --- TOWER GAME ---
 
 @dp.message(Command("tower"))
 @dp.message(lambda message: message.text and re.match(r'^(башня|tower)\s*', message.text, re.IGNORECASE))
@@ -4903,7 +5098,6 @@ async def cmd_tower(message: types.Message):
         await show_tower_info(message, user_id)
 
 
-# --- QWAK GAME (КВАК) ---
 
 @dp.message(Command("qwak", "квак", "frog"))
 @dp.message(lambda message: message.text and re.match(r'^(квак|qwak|frog|лягушка)\b', message.text, re.IGNORECASE))
@@ -4957,7 +5151,6 @@ async def cmd_qwak(message: types.Message):
         await show_qwak_info(message, user_id)
 
 
-# --- DIAMONDS GAME (АЛМАЗЫ) ---
 
 @dp.message(Command("diamond", "diamonds"))
 @dp.message(lambda message: message.text and re.match(r'^(алмазы|алмаз|diamond|diamonds)\s*', message.text, re.IGNORECASE))
@@ -5021,11 +5214,10 @@ async def cmd_diamonds(message: types.Message):
         await show_diamonds_info(message, user_id)
 
 
-# --- GOLD GAME (ЗОЛОТО) ---
 
 async def show_gold_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -5129,7 +5321,6 @@ async def cmd_gold(message: types.Message):
         await show_gold_info(message, user_id)
 
 
-# --- 21 (ОЧКО) GAME ---
 
 @dp.message(Command("21", "очко", "ochko", "twentyone"))
 @dp.message(lambda message: message.text and re.match(r'^(21|очко|ochko)\b', message.text, re.IGNORECASE))
@@ -5179,7 +5370,6 @@ async def cmd_twentyone(message: types.Message):
         await show_twentyone_info(message, user_id)
 
 
-# --- CRASH GAME (КРАШ) ---
 
 CRASH_STICKER_ID = "CAACAgIAAxkBAAERvEdqhKGsSq0k-jQQ4fTpDTbyWVntowACGoAAAq1smEp3pQH6UfFOqz0E"
 
@@ -5199,7 +5389,6 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
         except Exception:
             pass
 
-    # Generate crash point (97% RTP)
     r = secrets.SystemRandom().random()
     if r >= 0.97:
         crash_point = 1.00
@@ -5219,12 +5408,11 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
     else:
         crash_point_str = f"{crash_point:.2f}".rstrip('0').rstrip('.')
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
 
     current_data = get_user(user_id)
 
     if DEMO_GAME_CONTEXT.get() or is_demo_user(user_id) or target_mult <= crash_point:
-        # WIN
         win_amount = int(bet * target_mult)
         if win_amount > 2000000000 and not is_admin_unlimited_bet(user_id):
             win_amount = 2000000000
@@ -5240,7 +5428,6 @@ async def process_crash_round(message: types.Message, user_id: int, bet: int, ta
             f'<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji> Ты <b>выиграл! Твой выигрыш составил <code>{format_number(win_amount)}</code> m¢</b> </blockquote>'
         )
     else:
-        # LOSE
         new_games = current_data["games"] + 1
         new_lost = current_data["lost"] + bet
 
@@ -5295,7 +5482,6 @@ async def cmd_crash(message: types.Message):
         await message.answer("<i>Максимальная ставка: 200kk m¢!</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Parse multiplier
     target_mult = parse_multiplier(args[1])
     if target_mult is None or target_mult < 1.01 or target_mult > 100000:
         await message.answer("<i>Множитель должен быть от x1.01 до x100k! Пример: 1.1, 4, 100к</i>", parse_mode=ParseMode.HTML)
@@ -5305,22 +5491,17 @@ async def cmd_crash(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_crash_round(message, user_id, bet, target_mult, user_first_name=message.from_user.first_name))
+    asyncio.create_task(process_crash_round(message, user_id, bet, target_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
 
 
-# --- SLOTS GAME (СЛОТЫ) ---
 
 async def process_slots_outcome(message: types.Message, dice_msg: types.Message, user_id: int, bet: int, user_first_name: str = None):
     await asyncio.sleep(2.7)
 
-    # Telegram dice 🎰 value is 1..64
-    # (value - 1) has 6 bits: reel1 (bits 0-1), reel2 (bits 2-3), reel3 (bits 4-5)
-    # 0 = BAR (🅱️), 1 = Berries/Cherry (🍒), 2 = Lemon (🍋), 3 = Seven (7️⃣)
     val = (dice_msg.dice.value - 1) if (dice_msg and dice_msg.dice) else 0
     reel1 = val & 3
     reel2 = (val >> 2) & 3
@@ -5331,7 +5512,7 @@ async def process_slots_outcome(message: types.Message, dice_msg: types.Message,
 
     is_win = DEMO_GAME_CONTEXT.get() or (reel1 == reel2 == reel3)
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -5415,7 +5596,6 @@ async def cmd_slots(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
@@ -5428,10 +5608,9 @@ async def cmd_slots(message: types.Message):
         await message.answer("<i>Ошибка запуска слотов! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_slots_outcome(message, dice_msg, user_id, bet, user_first_name=message.from_user.first_name))
+    asyncio.create_task(process_slots_outcome(message, dice_msg, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
 
 
-# --- BOWLING GAME (БОУЛИНГ) ---
 
 def parse_bowling_choice(choice_text: str):
     t = choice_text.lower().strip()
@@ -5488,7 +5667,7 @@ async def process_bowling_outcome(message: types.Message, dice_msg: types.Messag
 
     is_win = DEMO_GAME_CONTEXT.get() or (val == target_choice_code)
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -5561,7 +5740,6 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
@@ -5589,7 +5767,7 @@ async def process_bowling_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer("<i>Ошибка запуска боулинга! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_bowling_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, user_first_name=callback.from_user.first_name))
+    asyncio.create_task(process_bowling_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
 
 
 @dp.message(Command("bowling", "боулинг", "бо"))
@@ -5630,12 +5808,10 @@ async def cmd_bowling(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # If outcome is specified in arguments (e.g., "боулинг 100 1 кегля", "боулинг 100 страйк")
     if len(tokens) >= 2:
         choice_raw = " ".join(tokens[1:])
         target_code, target_name = parse_bowling_choice(choice_raw)
         if target_code is not None:
-            # Deduct bet upfront
             if not update_user(user_id, balance=user_data["balance"] - bet):
                 await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
                 return
@@ -5646,11 +5822,10 @@ async def cmd_bowling(message: types.Message):
                 update_user(user_id, balance=user_data["balance"] + bet)
                 await message.answer("<i>Ошибка запуска боулинга! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
                 return
-            asyncio.create_task(process_bowling_outcome(message, dice_msg, user_id, bet, target_code, target_name, user_first_name=message.from_user.first_name))
+            asyncio.create_task(process_bowling_outcome(message, dice_msg, user_id, bet, target_code, target_name, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
-    # Otherwise prompt user to choose outcome
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"🎳 <b>Боулинг · Выберите итог:</b>\n"
@@ -5665,7 +5840,6 @@ async def cmd_bowling(message: types.Message):
     )
 
 
-# --- DICE GAME (КУБИК) ---
 
 DICE_CHOICES = {
     "n1": ("1", 5.8),
@@ -5792,7 +5966,7 @@ async def process_dice_outcome(message: types.Message, dice_msg: types.Message, 
     outcome_str = f"Выпало {val}"
     is_win = DEMO_GAME_CONTEXT.get() or is_dice_choice_win(choice_code, val)
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -5868,7 +6042,7 @@ async def process_dice_choice_callback(callback: types.CallbackQuery):
     except Exception:
         pass
 
-    await start_dice_game(callback.message, callback.from_user.id, bet, choice_code, choice_name, multiplier, user_first_name=callback.from_user.first_name)
+    await start_dice_game(callback.message, callback.from_user.id, bet, choice_code, choice_name, multiplier, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
 
 @dp.message(Command("dice", "кубик", "куб"))
@@ -5912,10 +6086,10 @@ async def cmd_dice(message: types.Message):
         choice_raw = " ".join(tokens[1:])
         choice_code, choice_name, multiplier = parse_dice_choice(choice_raw)
         if choice_code is not None:
-            await start_dice_game(message, user_id, bet, choice_code, choice_name, multiplier, user_first_name=message.from_user.first_name)
+            await start_dice_game(message, user_id, bet, choice_code, choice_name, multiplier, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
 
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"☘️ <b>Кубик · выбери режим!</b>\n"
@@ -5930,7 +6104,6 @@ async def cmd_dice(message: types.Message):
     )
 
 
-# --- COIN GAME (МОНЕТКА) ---
 
 COIN_MULTIPLIER = 1.97
 COIN_STICKERS = {
@@ -5999,7 +6172,7 @@ async def process_coin_outcome(message: types.Message, user_id: int, bet: int, c
 
     result_name = COIN_NAMES.get(result_code, "Орёл")
     is_win = DEMO_GAME_CONTEXT.get() or (choice_code == result_code)
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -6074,7 +6247,7 @@ async def process_coin_choice_callback(callback: types.CallbackQuery):
     except Exception:
         pass
 
-    await start_coin_game(callback.message, callback.from_user.id, bet, choice_code, choice_name, COIN_MULTIPLIER, user_first_name=callback.from_user.first_name)
+    await start_coin_game(callback.message, callback.from_user.id, bet, choice_code, choice_name, COIN_MULTIPLIER, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
 
 @dp.callback_query(lambda c: c.data == "coin_cancel")
@@ -6127,10 +6300,10 @@ async def cmd_coin(message: types.Message):
         choice_raw = " ".join(tokens[1:])
         choice_code, choice_name, multiplier = parse_coin_choice(choice_raw)
         if choice_code is not None:
-            await start_coin_game(message, user_id, bet, choice_code, choice_name, multiplier, user_first_name=message.from_user.first_name)
+            await start_coin_game(message, user_id, bet, choice_code, choice_name, multiplier, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
 
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"🪙 <b>Монета • выбери сторону!</b>\n"
@@ -6144,7 +6317,6 @@ async def cmd_coin(message: types.Message):
     )
 
 
-# --- FISHING GAME (РЫБАЛКА) ---
 
 FISHING_OUTCOMES = [
     {
@@ -6207,7 +6379,7 @@ async def process_fishing_outcome(message: types.Message, user_id: int, bet: int
     multiplier = float(outcome.get("multiplier", 0))
     win_amount = int(bet * multiplier)
     is_win = DEMO_GAME_CONTEXT.get() or multiplier > 0
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -6271,13 +6443,11 @@ async def cmd_fishing(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    await start_fishing_game(message, user_id, bet, user_first_name=message.from_user.first_name)
+    await start_fishing_game(message, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
 
 
-# --- CHEST GAME (СУНДУК) ---
 
 CHEST_CELLS_COUNT = 9
-# В сундуках: один приз x3, два приза x1, остальные x0.
 CHEST_PRIZES = [3.0, 1.0, 1.0]
 
 
@@ -6394,7 +6564,7 @@ async def process_chest_pick(callback: types.CallbackQuery):
         result_title = '😔<b>Сундук · Проигрыш!</b>'
         result_note = '😭 <i>Сундук пустой!</i>'
 
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     result_text = (
         f"{user_link}\n"
         f"{result_title}\n"
@@ -6457,10 +6627,9 @@ async def cmd_chest(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    await show_chest_menu(message, user_id, bet, user_first_name=message.from_user.first_name)
+    await show_chest_menu(message, user_id, bet, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
 
 
-# --- SCRATCH GAME (СКРЕТЧ) ---
 
 SCRATCH_CELLS_COUNT = 6
 SCRATCH_MAX_BET = 300000000
@@ -6530,6 +6699,7 @@ def get_scratch_keyboard(game_id: int, symbols: list, revealed: set, settled: bo
 
 
 def build_scratch_text(user_id: int, user_name: str, game: dict, settled: bool = False):
+    user_name = get_user_display_name(user_id, user_name)
     user_link = get_user_mention(user_id, user_name or "Игрок")
     bet = game.get("bet", 0)
     symbols = list(game.get("mine_positions", []))
@@ -6648,7 +6818,7 @@ async def show_scratch_grid_from_message(message, user_id, game_id, settled=Fals
         return
 
     is_settled = settled or game.get("settled", False) or game.get("game_over", False)
-    text = build_scratch_text(user_id, message.from_user.first_name or "Игрок", game, settled=is_settled)
+    text = build_scratch_text(user_id, get_user_display_name(user_id, message.from_user.first_name) or "Игрок", game, settled=is_settled)
     keyboard = get_scratch_keyboard(game_id, list(game.get("mine_positions", [])), game.get("revealed", set()), settled=is_settled)
     try:
         msg = await message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
@@ -6672,7 +6842,7 @@ async def show_scratch_grid_from_callback(callback, user_id, game_id, settled=Fa
         return
 
     is_settled = settled or game.get("settled", False) or game.get("game_over", False)
-    text = build_scratch_text(user_id, callback.from_user.first_name or "Игрок", game, settled=is_settled)
+    text = build_scratch_text(user_id, get_user_display_name(user_id, callback.from_user.first_name) or "Игрок", game, settled=is_settled)
     keyboard = get_scratch_keyboard(game_id, list(game.get("mine_positions", [])), game.get("revealed", set()), settled=is_settled)
     try:
         msg = await callback.message.edit_text(text=text, parse_mode=ParseMode.HTML, reply_markup=keyboard, disable_web_page_preview=True)
@@ -6839,7 +7009,6 @@ async def cmd_scratch(message: types.Message):
     await start_scratch_game_from_command(message, user_id, chat_id, bet)
 
 
-# --- ROULETTE GAME (РУЛЕТКА) ---
 
 ROULETTE_RED_NUMBERS = {1, 3, 5, 7, 9, 12, 14, 16, 18, 19, 21, 23, 25, 27, 30, 32, 34, 36}
 ROULETTE_BLACK_NUMBERS = {2, 4, 6, 8, 10, 11, 13, 15, 17, 20, 22, 24, 26, 28, 29, 31, 33, 35}
@@ -7190,7 +7359,7 @@ async def process_roulette_outcome(message: types.Message, user_id: int, bet: in
     await asyncio.sleep(3.5)
 
     is_win = DEMO_GAME_CONTEXT.get() or result in win_numbers
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
     result_text = roulette_result_label(result)
 
@@ -7249,7 +7418,7 @@ async def process_roulette_menu_callback(callback: types.CallbackQuery):
     except Exception:
         return
     page = parts[2]
-    await send_or_edit_roulette_menu(callback, callback.from_user.id, callback.from_user.first_name, bet, page=page, edit=True)
+    await send_or_edit_roulette_menu(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), bet, page=page, edit=True)
 
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("roul_pick:"))
@@ -7273,7 +7442,7 @@ async def process_roulette_pick_callback(callback: types.CallbackQuery):
         await callback.message.delete()
     except Exception:
         pass
-    await start_roulette_game(callback.message, callback.from_user.id, bet, code, choice_name, multiplier, win_numbers, user_first_name=callback.from_user.first_name)
+    await start_roulette_game(callback.message, callback.from_user.id, bet, code, choice_name, multiplier, win_numbers, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
 
 @dp.message(Command("roulette", "рулетка", "рул"))
@@ -7317,15 +7486,14 @@ async def cmd_roulette(message: types.Message):
         choice_raw = " ".join(tokens[1:])
         code, choice_name, multiplier, win_numbers = parse_roulette_choice(choice_raw)
         if code is not None:
-            await start_roulette_game(message, user_id, bet, code, choice_name, multiplier, win_numbers, user_first_name=message.from_user.first_name)
+            await start_roulette_game(message, user_id, bet, code, choice_name, multiplier, win_numbers, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
             return
         await message.answer("<i>Не понял исход. Примеры: <code>рулетка 100 ч</code>, <code>рулетка 100 1</code>, <code>рулетка 100 1,2,3</code></i>", parse_mode=ParseMode.HTML)
         return
 
-    await send_or_edit_roulette_menu(message, user_id, message.from_user.first_name, bet, page="main", edit=False)
+    await send_or_edit_roulette_menu(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), bet, page="main", edit=False)
 
 
-# --- DARTS GAME (ДАРТС) ---
 
 def parse_darts_choice(choice_text: str):
     t = choice_text.lower().strip()
@@ -7370,7 +7538,6 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
     }
     outcome_str = outcome_names.get(val, f"Сектор {val}")
 
-    # Win condition
     is_win = False
     if target_choice_code == "red" and val in [2, 4, 6]:
         is_win = True
@@ -7382,7 +7549,7 @@ async def process_darts_outcome(message: types.Message, dice_msg: types.Message,
         is_win = True
     is_win = DEMO_GAME_CONTEXT.get() or is_win
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -7458,7 +7625,6 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
@@ -7476,7 +7642,7 @@ async def process_darts_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer("<i>Ошибка запуска дартса! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_darts_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=callback.from_user.first_name))
+    asyncio.create_task(process_darts_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
 
 
 @dp.message(Command("darts", "дартс", "дс", "dart"))
@@ -7517,12 +7683,10 @@ async def cmd_darts(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # If outcome is specified in arguments (e.g., "дартс 100 центр", "дс 100 мимо")
     if len(tokens) >= 2:
         choice_raw = " ".join(tokens[1:])
         target_code, target_name, win_mult = parse_darts_choice(choice_raw)
         if target_code is not None:
-            # Deduct bet upfront
             if not update_user(user_id, balance=user_data["balance"] - bet):
                 await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
                 return
@@ -7533,11 +7697,10 @@ async def cmd_darts(message: types.Message):
                 update_user(user_id, balance=user_data["balance"] + bet)
                 await message.answer("<i>Ошибка запуска дартса! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
                 return
-            asyncio.create_task(process_darts_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=message.from_user.first_name))
+            asyncio.create_task(process_darts_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
-    # Otherwise prompt user to choose outcome
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"🎯 <b>Дартс · выбери исход!</b>\n"
@@ -7556,7 +7719,6 @@ async def cmd_darts(message: types.Message):
     )
 
 
-# --- BASKETBALL GAME (БАСКЕТБОЛ) ---
 
 def parse_basketball_choice(choice_text: str):
     t = choice_text.lower().strip()
@@ -7597,7 +7759,6 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
     }
     outcome_str = outcome_names.get(val, "Мимо")
 
-    # Win condition
     is_win = False
     if target_choice_code == "hit" and val in [4, 5]:
         is_win = True
@@ -7607,7 +7768,7 @@ async def process_basketball_outcome(message: types.Message, dice_msg: types.Mes
         is_win = True
     is_win = DEMO_GAME_CONTEXT.get() or is_win
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -7682,7 +7843,6 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
@@ -7700,7 +7860,7 @@ async def process_basketball_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer("<i>Ошибка запуска баскетбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_basketball_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=callback.from_user.first_name))
+    asyncio.create_task(process_basketball_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
 
 
 @dp.message(Command("basketball", "баскетбол", "баскет", "бс", "бк"))
@@ -7741,12 +7901,10 @@ async def cmd_basketball(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # If outcome is specified in arguments (e.g., "баскетбол 100 гол", "бс 100 мимо")
     if len(tokens) >= 2:
         choice_raw = " ".join(tokens[1:])
         target_code, target_name, win_mult = parse_basketball_choice(choice_raw)
         if target_code is not None:
-            # Deduct bet upfront
             if not update_user(user_id, balance=user_data["balance"] - bet):
                 await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
                 return
@@ -7757,11 +7915,10 @@ async def cmd_basketball(message: types.Message):
                 update_user(user_id, balance=user_data["balance"] + bet)
                 await message.answer("<i>Ошибка запуска баскетбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
                 return
-            asyncio.create_task(process_basketball_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=message.from_user.first_name))
+            asyncio.create_task(process_basketball_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
-    # Otherwise prompt user to choose outcome
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"🏀 <b>Баскетбол · выбери исход!</b>\n"
@@ -7779,7 +7936,6 @@ async def cmd_basketball(message: types.Message):
     )
 
 
-# --- FOOTBALL GAME (ФУТБОЛ) ---
 
 def parse_football_choice(choice_text: str):
     t = choice_text.lower().strip()
@@ -7815,7 +7971,6 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
     }
     outcome_str = outcome_names.get(val, "Мимо")
 
-    # Win condition
     is_win = False
     if target_choice_code == "goal" and val in [3, 4, 5]:
         is_win = True
@@ -7823,7 +7978,7 @@ async def process_football_outcome(message: types.Message, dice_msg: types.Messa
         is_win = True
     is_win = DEMO_GAME_CONTEXT.get() or is_win
 
-    user_link = get_user_mention(user_id, user_first_name or (message.from_user.first_name if message and message.from_user and message.from_user.first_name != "Мины Бот" else None))
+    user_link = get_user_mention(user_id, user_first_name or (get_user_display_name(message.from_user.id, message.from_user.first_name) if message and message.from_user and get_user_display_name(message.from_user.id, message.from_user.first_name) != "Мины Бот" else None))
     current_data = get_user(user_id)
 
     if is_win:
@@ -7897,7 +8052,6 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # Deduct bet upfront
     if not update_user(user_id, balance=user_data["balance"] - bet):
         await callback.message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
         return
@@ -7915,7 +8069,7 @@ async def process_football_choice_callback(callback: types.CallbackQuery):
         await callback.message.answer("<i>Ошибка запуска футбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
         return
 
-    asyncio.create_task(process_football_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=callback.from_user.first_name))
+    asyncio.create_task(process_football_outcome(callback.message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name)))
 
 
 @dp.message(Command("football", "футбол", "фб"))
@@ -7956,12 +8110,10 @@ async def cmd_football(message: types.Message):
         await message.answer(f"<i>Недостаточно средств! Ваш баланс: {format_number(user_data['balance'])} mCoin</i>", parse_mode=ParseMode.HTML)
         return
 
-    # If outcome is specified in arguments (e.g., "футбол 100 гол", "фб 100 мимо")
     if len(tokens) >= 2:
         choice_raw = " ".join(tokens[1:])
         target_code, target_name, win_mult = parse_football_choice(choice_raw)
         if target_code is not None:
-            # Deduct bet upfront
             if not update_user(user_id, balance=user_data["balance"] - bet):
                 await message.answer("<i>Ошибка списания средств!</i>", parse_mode=ParseMode.HTML)
                 return
@@ -7972,11 +8124,10 @@ async def cmd_football(message: types.Message):
                 update_user(user_id, balance=user_data["balance"] + bet)
                 await message.answer("<i>Ошибка запуска футбола! Ставка возвращена.</i>", parse_mode=ParseMode.HTML)
                 return
-            asyncio.create_task(process_football_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=message.from_user.first_name))
+            asyncio.create_task(process_football_outcome(message, dice_msg, user_id, bet, target_code, target_name, win_mult, user_first_name=get_user_display_name(message.from_user.id, message.from_user.first_name)))
             return
 
-    # Otherwise prompt user to choose outcome
-    user_link = get_user_mention(user_id, message.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     prompt_text = (
         f"{user_link}\n"
         f"⚽️ <b>Футбол · выбери исход!</b>\n"
@@ -7993,7 +8144,6 @@ async def cmd_football(message: types.Message):
     )
 
 
-# --- PROMO CODES ---
 
 @dp.message(Command("promo", "промо"))
 @dp.message(lambda message: message.text and re.match(r'^(промо|promo)\b', message.text, re.IGNORECASE))
@@ -8001,7 +8151,7 @@ async def cmd_promo(message: types.Message):
     user_id = message.from_user.id
     text = message.text.strip()
 
-    user_name = html.escape(message.from_user.first_name or "Игрок")
+    user_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     parts = re.split(r'\s+', text, maxsplit=1)
@@ -8059,7 +8209,6 @@ async def cmd_promo(message: types.Message):
         await message.reply(f"<i>Ошибка при активации промокода: {html.escape(str(e))}</i>", parse_mode=ParseMode.HTML)
 
 
-# --- BALANCE, BONUS & TRANSFERS ---
 
 @dp.message(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"])
 async def cmd_balance(message: types.Message):
@@ -8170,10 +8319,9 @@ async def cmd_bonus(message: types.Message):
         await message.reply("<i>Ошибка при начислении бонуса!</i>", parse_mode=ParseMode.HTML)
 
 
-# --- INFO PROMPTS ---
 
 async def show_mines_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
 
     text = (
         '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Мины — это игра, в которой вам нужно угадать пустые ячейки. Чем больше ячеек вы откроете, тем больше получите mCoin!\n'
@@ -8196,7 +8344,7 @@ async def show_mines_info(message, user_id):
 
 
 async def show_tower_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
 
     text = (
         '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Башня — это игра, в которой нужно избежать мин и добраться до вершины.\n'
@@ -8219,7 +8367,7 @@ async def show_tower_info(message, user_id):
 
 
 async def show_qwak_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
 
     text = (
         '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Квак — режим как башня: нужно прыгать по кувшинкам и не попасть на мину. Всего 5 этажей.\n'
@@ -8247,7 +8395,7 @@ async def show_qwak_info(message, user_id):
 
 
 async def show_diamonds_info(message, user_id):
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
 
     text = (
         '<blockquote expandable><i><tg-emoji emoji-id="5307594157739515229">ℹ️</tg-emoji> Алмазная лихорадка — это игра, в которой необходимо угадать, в какой ячейке спрятан алмаз. Вам нужно открывать по одной ячейке на каждом из 16 уровней, чтобы найти алмаз.\n'
@@ -8271,7 +8419,7 @@ async def show_diamonds_info(message, user_id):
 
 async def show_twentyone_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8335,7 +8483,7 @@ async def process_info_twentyone(callback: types.CallbackQuery):
 
 async def show_crash_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8393,7 +8541,7 @@ async def show_crash_info(message_or_callback, user_id, is_callback=False):
 
 async def show_slots_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8451,7 +8599,7 @@ async def show_slots_info(message_or_callback, user_id, is_callback=False):
 
 async def show_bowling_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8509,7 +8657,7 @@ async def show_bowling_info(message_or_callback, user_id, is_callback=False):
 
 async def show_dice_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8572,7 +8720,7 @@ async def show_dice_info(message_or_callback, user_id, is_callback=False):
 
 async def show_coin_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8632,7 +8780,7 @@ async def show_coin_info(message_or_callback, user_id, is_callback=False):
 
 async def show_roulette_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8695,7 +8843,7 @@ async def show_roulette_info(message_or_callback, user_id, is_callback=False):
 
 async def show_chest_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8752,7 +8900,7 @@ async def show_chest_info(message_or_callback, user_id, is_callback=False):
 
 async def show_scratch_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8795,7 +8943,7 @@ async def show_scratch_info(message_or_callback, user_id, is_callback=False):
 
 async def show_fishing_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8853,27 +9001,26 @@ async def show_fishing_info(message_or_callback, user_id, is_callback=False):
             )
 
 
-# --- CATALOG CALLBACK HANDLERS ---
 
 @dp.callback_query(lambda c: c.data == "catalog_main")
 async def process_catalog_main(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_catalog(callback, callback.from_user.id, callback.from_user.first_name, callback.message.chat.id, is_group, edit=True)
+    await show_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group, edit=True)
 
 
 @dp.callback_query(lambda c: c.data == "catalog_fast")
 async def process_catalog_fast(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_fast_games_catalog(callback, callback.from_user.id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_fast_games_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
 @dp.callback_query(lambda c: c.data == "catalog_modes")
 async def process_catalog_modes(callback: types.CallbackQuery):
     await callback.answer()
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_modes_games_catalog(callback, callback.from_user.id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_modes_games_catalog(callback, callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
 @dp.callback_query(lambda c: c.data == "info_slots")
@@ -8926,7 +9073,7 @@ async def process_info_roulette(callback: types.CallbackQuery):
 
 async def show_darts_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -8990,7 +9137,7 @@ async def process_info_darts(callback: types.CallbackQuery):
 
 async def show_basketball_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -9054,7 +9201,7 @@ async def process_info_basketball(callback: types.CallbackQuery):
 
 async def show_football_info(message_or_callback, user_id, is_callback=False):
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        user_name = message_or_callback.from_user.first_name or "Игрок"
+        user_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         user_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(user_name)}</a>'
@@ -9122,7 +9269,6 @@ async def process_info_crash(callback: types.CallbackQuery):
     await show_crash_info(callback, callback.from_user.id, is_callback=True)
 
 
-# --- MINES GAME EXECUTION ---
 
 async def start_mines_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
@@ -9189,7 +9335,7 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
     multiplier = get_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -9364,7 +9510,6 @@ async def show_mines_grid_from_message(message, user_id, game_id, game_over=Fals
     game_messages[key].append(msg.message_id)
 
 
-# --- TOWER GAME EXECUTION ---
 
 async def start_tower_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
@@ -9432,7 +9577,7 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
     exploded_mine = game.get("exploded_mine")
     hide_demo_mines = bool(game.get("demo_mode") or DEMO_GAME_CONTEXT.get())
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
     multiplier = get_tower_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -9612,7 +9757,6 @@ async def show_tower_grid_from_message(message, user_id, game_id, game_over=Fals
     game_messages[key].append(msg.message_id)
 
 
-# --- QWAK GAME EXECUTION ---
 
 def get_qwak_next_multiplier(level: int):
     if level >= QWAK_ROWS:
@@ -9634,6 +9778,7 @@ def get_qwak_current_col(game: dict):
 
 
 def build_qwak_view(user_id: int, user_name: str, game_id: int, game: dict, game_over=False, won=False):
+    user_name = get_user_display_name(user_id, user_name)
     bet = game["bet"]
     revealed = game.get("revealed", set())
     mine_positions = game.get("mine_positions", generate_qwak_mines())
@@ -9819,7 +9964,7 @@ async def show_qwak_grid_from_message(message, user_id, game_id, game_over=False
             update_user(user_id, games=user_data["games"] + 1, balance=user_data["balance"] + win_amount)
             add_game_history(user_id, "qwak", game["bet"], "win", win_amount, game.get("created_at_str"))
 
-    text, keyboard = build_qwak_view(user_id, message.from_user.first_name or "Игрок", game_id, game, game_over=game_over, won=won)
+    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, message.from_user.first_name) or "Игрок", game_id, game, game_over=game_over, won=won)
 
     msg = None
     try:
@@ -9861,7 +10006,7 @@ async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=Fal
             update_user(user_id, games=user_data["games"] + 1, balance=user_data["balance"] + win_amount)
             add_game_history(user_id, "qwak", game["bet"], "win", win_amount, game.get("created_at_str"))
 
-    text, keyboard = build_qwak_view(user_id, callback.from_user.first_name or "Игрок", game_id, game, game_over=game_over, won=won)
+    text, keyboard = build_qwak_view(user_id, get_user_display_name(user_id, callback.from_user.first_name) or "Игрок", game_id, game, game_over=game_over, won=won)
 
     msg = None
     try:
@@ -9878,7 +10023,6 @@ async def show_qwak_grid_from_callback(callback, user_id, game_id, game_over=Fal
     game_messages[key].append(msg.message_id)
 
 
-# --- DIAMONDS GAME EXECUTION ---
 
 async def start_diamonds_game_from_command(message, user_id, chat_id, bet, mine_count):
     key = get_chat_key(user_id, chat_id)
@@ -9945,7 +10089,7 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    user_link = f'<a href="tg://user?id={user_id}">{html.escape(message.from_user.first_name or "Игрок")}</a>'
+    user_link = f'<a href="tg://user?id={user_id}">{html.escape(get_user_display_name(user_id, message.from_user.first_name) or "Игрок")}</a>'
     multiplier = get_diamonds_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
 
@@ -10126,7 +10270,6 @@ async def show_diamonds_grid_from_message(message, user_id, game_id, game_over=F
     game_messages[key].append(msg.message_id)
 
 
-# --- CALLBACK HANDLERS: TOWER ---
 
 @dp.callback_query(lambda c: c.data == "tower")
 async def process_tower_start(callback: types.CallbackQuery):
@@ -10171,7 +10314,7 @@ async def process_tower_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
@@ -10393,7 +10536,7 @@ async def show_tower_grid_from_callback(callback, user_id, game_id, game_over=Fa
     exploded_mine = game.get("exploded_mine")
     hide_demo_mines = bool(game.get("demo_mode") or DEMO_GAME_CONTEXT.get())
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_tower_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -10741,10 +10884,9 @@ async def process_tower_back_to_catalog(callback: types.CallbackQuery):
         pass
 
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_catalog(callback, user_id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-# --- CALLBACK HANDLERS: QWAK ---
 
 @dp.callback_query(lambda c: c.data == "qwak")
 async def process_qwak_start(callback: types.CallbackQuery):
@@ -10969,7 +11111,6 @@ async def process_exit_qwak(callback: types.CallbackQuery):
     await callback.answer("⚠️ Если вы хотите отменить игру, нажмите ещё раз на кнопку назад.", show_alert=True)
 
 
-# --- CALLBACK HANDLERS: MINES ---
 
 @dp.callback_query(lambda c: c.data.startswith("cell_"))
 async def process_cell_click(callback: types.CallbackQuery):
@@ -11063,7 +11204,7 @@ async def show_mines_grid_from_callback(callback, user_id, game_id, game_over=Fa
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -11474,7 +11615,7 @@ async def process_back_to_catalog_from_select(callback: types.CallbackQuery):
         pass
 
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_catalog(callback, user_id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
 @dp.callback_query(lambda c: c.data == "mines")
@@ -11520,7 +11661,7 @@ async def process_mines_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
@@ -11566,7 +11707,6 @@ async def process_mines_start(callback: types.CallbackQuery):
     game_messages[key].append(msg.message_id)
 
 
-# --- CALLBACK HANDLERS: DIAMONDS ---
 
 @dp.callback_query(lambda c: c.data == "diamonds")
 async def process_diamonds_start(callback: types.CallbackQuery):
@@ -11611,7 +11751,7 @@ async def process_diamonds_start(callback: types.CallbackQuery):
     active_games[user_id] = game_id
     save_active_game_to_db(game_id, game_data)
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
@@ -11821,7 +11961,7 @@ async def show_diamonds_grid_from_callback(callback, user_id, game_id, game_over
     level = game["level"]
     exploded_mine = game.get("exploded_mine")
 
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(user_id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
     multiplier = get_diamonds_multiplier(mine_count, level)
     win_amount = int(bet * multiplier)
@@ -12170,10 +12310,9 @@ async def process_diamonds_back_to_catalog(callback: types.CallbackQuery):
         pass
 
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_catalog(callback, user_id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
-# --- GOLD GAME (ЗОЛОТО) EXECUTION & CALLBACKS ---
 
 async def start_gold_game_from_command(message, user_id, chat_id, bet):
     key = get_chat_key(user_id, chat_id)
@@ -12226,7 +12365,6 @@ async def start_gold_game_from_command(message, user_id, chat_id, bet):
 
 def build_gold_board_text(game, bet, level, game_over, won, exploded_mine):
     rows_text = []
-    # Render from row 11 (4096x) down to row 0 (2x)
     for lvl_idx in range(GOLD_ROWS - 1, -1, -1):
         mult = GOLD_MULTIPLIERS[lvl_idx + 1]
         amt_str = f"{format_number(bet * mult)} m¢ ({mult}x)"
@@ -12256,7 +12394,6 @@ def build_gold_board_text(game, bet, level, game_over, won, exploded_mine):
                 c0 = "🧨" if mine_col == 0 else "💸"
                 c1 = "🧨" if mine_col == 1 else "💸"
         else:
-            # Won
             if lvl_idx < level:
                 chosen = game["revealed"].get(lvl_idx)
                 c0 = "💰" if chosen == 0 else "🧨"
@@ -12283,7 +12420,7 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
     exploded_mine = game.get("exploded_mine")
 
     if hasattr(message_or_callback, "from_user") and message_or_callback.from_user:
-        raw_name = message_or_callback.from_user.first_name or "Игрок"
+        raw_name = get_user_display_name(user_id, message_or_callback.from_user.first_name) or "Игрок"
     else:
         raw_name = "Игрок"
     user_link = f'<a href="tg://user?id={user_id}">{html.escape(raw_name)}</a>'
@@ -12413,7 +12550,6 @@ async def show_gold_grid_from_message(message_or_callback, user_id, game_id, gam
         game_messages[key].append(msg.message_id)
 
 
-# --- CALLBACK HANDLERS: GOLD ---
 
 @dp.callback_query(lambda c: c.data and c.data.startswith("gold_cell_"))
 async def process_gold_cell(callback: types.CallbackQuery):
@@ -12617,7 +12753,6 @@ async def process_gold_info_callback(callback: types.CallbackQuery):
     await show_gold_info(callback, callback.from_user.id, is_callback=True)
 
 
-# --- 21 (ОЧКО) GAME EXECUTION & CALLBACKS ---
 
 RANKS_21 = ['2', '3', '4', '5', '6', '7', '8', '9', '10', 'J', 'Q', 'K', 'A']
 SUITS_21 = ['♠️', '♥️', '♦️', '♣️']
@@ -12688,7 +12823,7 @@ async def start_twentyone_game_from_command(message, user_id, chat_id, bet):
 
     game_id = get_next_game_id()
     now = datetime.now()
-    user_first_name = message.from_user.first_name or "Игрок"
+    user_first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
 
     game_data = {
         "type": "twentyone",
@@ -12762,7 +12897,7 @@ async def show_twentyone_from_callback(callback: types.CallbackQuery, user_id: i
         return
 
     bet = game["bet"]
-    user_first_name = game.get("user_first_name") or callback.from_user.first_name or "Игрок"
+    user_first_name = game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"
     user_link = get_user_mention(user_id, user_first_name)
     stage = game.get("stage", "ready")
 
@@ -12932,8 +13067,8 @@ async def process_twentyone_start(callback: types.CallbackQuery):
         return
 
     game["stage"] = "playing"
-    if callback.from_user.first_name:
-        game["user_first_name"] = callback.from_user.first_name
+    if get_user_display_name(callback.from_user.id, callback.from_user.first_name):
+        game["user_first_name"] = get_user_display_name(callback.from_user.id, callback.from_user.first_name)
     deck = game["deck"]
     game["player_cards"] = [deck.pop(), deck.pop()]
     game["dealer_cards"] = [deck.pop(), deck.pop()]
@@ -12943,7 +13078,6 @@ async def process_twentyone_start(callback: types.CallbackQuery):
     bet = game["bet"]
     user_data = get_user(user_id)
 
-    # If dealer has 21 immediately on deal -> automatic loss (or tie if player also has 21)
     if dealer_score == 21 and not DEMO_GAME_CONTEXT.get():
         game["settled"] = True
         game["game_over"] = True
@@ -12955,12 +13089,11 @@ async def process_twentyone_start(callback: types.CallbackQuery):
             del games[game_id]
         remove_active_game_from_db(game_id)
 
-        user_link = get_user_mention(user_id, game.get("user_first_name") or callback.from_user.first_name)
+        user_link = get_user_mention(user_id, game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name))
         dealer_str = format_21_cards(game["dealer_cards"])
         player_str = format_21_cards(game["player_cards"])
 
         if player_score == 21:
-            # Both have 21 -> Tie
             update_user(user_id, balance=user_data["balance"] + bet, games=user_data["games"] + 1)
             add_game_history(user_id, "twentyone", bet, "draw", bet, game.get("created_at_str"))
 
@@ -12977,7 +13110,6 @@ async def process_twentyone_start(callback: types.CallbackQuery):
                 '<i>🤝 Ничья! У обоих 21. Ставка возвращена на баланс.</i>'
             )
         else:
-            # Dealer has 21 -> Automatic loss
             update_user(user_id, lost=user_data["lost"] + bet, games=user_data["games"] + 1)
             add_game_history(user_id, "twentyone", bet, "lose", 0, game.get("created_at_str"))
 
@@ -13033,7 +13165,6 @@ async def process_twentyone_hit(callback: types.CallbackQuery):
     await callback.answer()
 
     if player_score > 21 and not DEMO_GAME_CONTEXT.get():
-        # Bust -> Player loses
         game["settled"] = True
         game["game_over"] = True
         game["won"] = False
@@ -13048,7 +13179,7 @@ async def process_twentyone_hit(callback: types.CallbackQuery):
             del games[game_id]
         remove_active_game_from_db(game_id)
 
-        user_link = get_user_mention(user_id, game.get("user_first_name") or callback.from_user.first_name)
+        user_link = get_user_mention(user_id, game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name))
         dealer_str = format_21_cards(game["dealer_cards"])
         player_str = format_21_cards(game["player_cards"])
 
@@ -13108,11 +13239,10 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
     bet = game["bet"]
     user_data = get_user(user_id)
 
-    user_link = get_user_mention(user_id, game.get("user_first_name") or callback.from_user.first_name)
+    user_link = get_user_mention(user_id, game.get("user_first_name") or get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     dealer_str = format_21_cards(dealer_cards)
     player_str = format_21_cards(game["player_cards"])
     if DEMO_GAME_CONTEXT.get():
-        # Keep the displayed cards real, but force the settlement branch to win.
         dealer_score = -1
 
     if active_games.get(user_id) == game_id:
@@ -13122,7 +13252,6 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
     remove_active_game_from_db(game_id)
 
     if dealer_score > 21:
-        # Dealer busts -> Player wins
         win_amount = int(bet * 1.97) if is_admin_unlimited_bet(user_id) else min(int(bet * 1.97), 1000000000)
         update_user(user_id, balance=user_data["balance"] + win_amount, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "win", win_amount, game.get("created_at_str"))
@@ -13141,7 +13270,6 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
             '<i>🎉 Ты победил! У дилера перебор.</i>'
         )
     elif player_score > dealer_score:
-        # Player wins by higher score
         win_amount = int(bet * 1.97) if is_admin_unlimited_bet(user_id) else min(int(bet * 1.97), 1000000000)
         update_user(user_id, balance=user_data["balance"] + win_amount, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "win", win_amount, game.get("created_at_str"))
@@ -13160,7 +13288,6 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
             f'<i>🎉 Ты победил! У тебя {player_score} против {dealer_score} у дилера.</i>'
         )
     elif player_score == dealer_score:
-        # Push (Tie)
         update_user(user_id, balance=user_data["balance"] + bet, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "draw", bet, game.get("created_at_str"))
 
@@ -13177,7 +13304,6 @@ async def process_twentyone_stand(callback: types.CallbackQuery):
             '<i>🤝 Ничья! Ставка возвращена на баланс.</i>'
         )
     else:
-        # Dealer higher score -> Player loses
         update_user(user_id, lost=user_data["lost"] + bet, games=user_data["games"] + 1)
         add_game_history(user_id, "twentyone", bet, "lose", 0, game.get("created_at_str"))
 
@@ -13233,7 +13359,6 @@ async def process_twentyone_cancel(callback: types.CallbackQuery):
         await callback.answer("Игру нельзя отменить во время раунда!", show_alert=True)
 
 
-# --- GENERAL PLAY / BACK & NOOP HANDLERS ---
 
 @dp.callback_query(lambda c: c.data == "play")
 async def process_play(callback: types.CallbackQuery):
@@ -13256,7 +13381,7 @@ async def process_play(callback: types.CallbackQuery):
         pass
 
     is_group = callback.message.chat.type in ["group", "supergroup"]
-    await show_catalog(callback, user_id, callback.from_user.first_name, callback.message.chat.id, is_group)
+    await show_catalog(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), callback.message.chat.id, is_group)
 
 
 @dp.callback_query(lambda c: c.data == "back")
@@ -13393,7 +13518,7 @@ async def process_bonus_tutorial(callback: types.CallbackQuery):
     await callback.answer()
 
     user_id = callback.from_user.id
-    clean_user_name = html.escape(callback.from_user.first_name or "Игрок")
+    clean_user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{clean_user_name}</a>'
 
     text = (
@@ -13438,7 +13563,52 @@ async def process_bonus_continue(callback: types.CallbackQuery):
     )
 
 
-# --- TRANSFERS ---
+
+@db_transaction
+def _apply_mcoin_transfer(sender_id, receiver_id, amount, commission):
+    if amount <= 0 or commission < 0 or commission > amount or sender_id == receiver_id:
+        return False
+    credited = amount - commission
+    try:
+        cursor.execute("UPDATE users SET balance = balance - ? WHERE user_id = ? AND balance >= ?", (amount, sender_id, amount))
+        if cursor.rowcount != 1:
+            return False
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (credited, credited, receiver_id))
+        if cursor.rowcount != 1:
+            return False
+        cursor.execute("INSERT INTO transfers_history (sender_id, receiver_id, amount, commission, created_at) VALUES (?, ?, ?, ?, ?)", (sender_id, receiver_id, credited, commission, datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+        return True
+    except sqlite3.Error:
+        logging.exception("Could not apply mCoin transfer")
+        return False
+
+
+@db_transaction
+def _apply_mp_transfer(sender_id, receiver_id, amount, today):
+    if amount <= 0 or sender_id == receiver_id:
+        return False
+    try:
+        cursor.execute(
+            """
+            UPDATE users SET mp_balance = mp_balance - ?,
+                mp_daily_transferred = CASE WHEN mp_daily_date = ? THEN COALESCE(mp_daily_transferred, 0) + ? ELSE ? END,
+                mp_daily_date = ?
+            WHERE user_id = ? AND mp_balance >= ?
+                AND CASE WHEN mp_daily_date = ? THEN COALESCE(mp_daily_transferred, 0) ELSE 0 END + ? <= 1000
+            """,
+            (amount, today, amount, amount, today, sender_id, amount, today, amount),
+        )
+        if cursor.rowcount != 1:
+            return False
+        cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount, receiver_id))
+        if cursor.rowcount != 1:
+            return False
+        cursor.execute("INSERT INTO mp_transfers_history (sender_id, receiver_id, amount, created_at) VALUES (?, ?, ?, ?)", (sender_id, receiver_id, amount, datetime.now().strftime("%d.%m.%Y %H:%M:%S")))
+        return True
+    except sqlite3.Error:
+        logging.exception("Could not apply MP transfer")
+        return False
+
 
 @dp.message(lambda message: message.text and (
     message.text.lower().startswith("дать") or 
@@ -13481,7 +13651,7 @@ async def cmd_transfer(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Игрок"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
         if args_parts:
             amt = resolve_bet_amount(args_parts[0], user_data["balance"])
             if amt is not None:
@@ -13560,21 +13730,14 @@ async def cmd_transfer(message: types.Message):
     receiver_balance_before = receiver_data["balance"]
 
     new_sender_balance = sender_balance_before - amount
-    update_user(user_id, balance=new_sender_balance)
-
     new_receiver_balance = receiver_balance_before + amount_after_commission
-    update_user(target_user_id, balance=new_receiver_balance)
+    if not _apply_mcoin_transfer(user_id, target_user_id, amount, commission):
+        await message.reply("<i>Не удалось выполнить перевод. Средства не списаны.</i>", parse_mode=ParseMode.HTML)
+        return
 
-    add_transfer_history(
-        sender_id=user_id,
-        receiver_id=target_user_id,
-        amount=amount_after_commission,
-        commission=commission
-    )
-
-    sender_name = html.escape(message.from_user.first_name or "Игрок")
+    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
     sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
-    clean_target_name = html.escape(str(target_name))
+    clean_target_name = html.escape(get_user_display_name(target_user_id, target_name))
     target_link = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a>'
 
     clean_comment = html.escape(comment) if comment else ""
@@ -13606,7 +13769,6 @@ async def cmd_transfer(message: types.Message):
         pass
 
 
-# --- MP (MINESPOINTS) CURRENCY & TRANSFERS ---
 
 @dp.message(Command("point", "points", "mp", "поинт", "поинты"))
 @dp.message(lambda message: message.text and message.text.strip().lower() in ["поинт", "поинты", "point", "points", "/point", "/points", "мп", "/mp", "mp"])
@@ -13638,7 +13800,7 @@ async def cmd_point(message: types.Message):
 async def cmd_send_mp(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
-    sender_name = html.escape(message.from_user.first_name or "Игрок")
+    sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок")
     sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
 
     help_text = (
@@ -13663,7 +13825,7 @@ async def cmd_send_mp(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Игрок"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
         if len(parts) >= 2:
             amount = parse_amount(parts[1])
         else:
@@ -13749,7 +13911,6 @@ async def cmd_send_mp(message: types.Message):
         )
         return
 
-    # Ensure target user exists in DB
     get_user(target_user_id)
 
     confirm_token = secrets.token_hex(8)
@@ -13761,7 +13922,7 @@ async def cmd_send_mp(message: types.Message):
         "chat_id": message.chat.id
     }
 
-    target_display = html.escape(target_name or get_user_display_name(target_user_id))
+    target_display = html.escape(get_user_display_name(target_user_id, target_name))
     target_link = f'<a href="tg://user?id={target_user_id}">{target_display}</a>'
 
     confirm_text = (
@@ -13846,8 +14007,6 @@ async def process_mp_yes(callback: types.CallbackQuery):
         await callback.answer(limit_error or "Операция запрещена.", show_alert=True)
         return
 
-    mp_pending_transfers.pop(token, None)
-
     sender_mp_after = sender_mp_before - amount
     receiver_mp_before = receiver_data.get("mp_balance", 0) or 0
     receiver_mp_after = receiver_mp_before + amount
@@ -13860,21 +14019,15 @@ async def process_mp_yes(callback: types.CallbackQuery):
 
     new_rem_limit = max(0, 1000 - new_daily_transferred)
 
-    update_user(sender_id, mp_balance=sender_mp_after, mp_daily_transferred=new_daily_transferred, mp_daily_date=today_str)
-    update_user(receiver_id, mp_balance=receiver_mp_after)
+    if not _apply_mp_transfer(sender_id, receiver_id, amount, today_str):
+        await callback.answer("Не удалось выполнить перевод. Средства не списаны.", show_alert=True)
+        return
+    mp_pending_transfers.pop(token, None)
 
-    now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-    try:
-        cursor.execute("INSERT INTO mp_transfers_history (sender_id, receiver_id, amount, created_at) VALUES (?, ?, ?, ?)",
-                       (sender_id, receiver_id, amount, now_str))
-        conn.commit()
-    except Exception:
-        pass
-
-    sender_name = html.escape(callback.from_user.first_name or "Игрок")
+    sender_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     sender_link = f'<a href="tg://user?id={sender_id}">{sender_name}</a>'
     target_raw_name = transfer.get("target_name") or get_user_display_name(receiver_id)
-    target_name = html.escape(target_raw_name)
+    target_name = html.escape(get_user_display_name(receiver_id, target_raw_name))
     target_link = f'<a href="tg://user?id={receiver_id}">{target_name}</a>'
 
     success_msg = (
@@ -13925,7 +14078,7 @@ async def cmd_addmp(message: types.Message):
 
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name
+        target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     elif len(args) > 1:
         target_arg = args[1]
         if target_arg.startswith("@"):
@@ -13958,7 +14111,7 @@ async def cmd_addmp(message: types.Message):
     new_bal = u_data.get("mp_balance", 0) + amount
     update_user(target_user_id, mp_balance=new_bal)
     await message.reply(
-        f"<i>✅ На баланс {target_name} добавлено <b>{format_number(amount)} MP</b>\n"
+        f"<i>✅ На баланс {html.escape(get_user_display_name(target_user_id, target_name) if target_name != 'ваш' else target_name)} добавлено <b>{format_number(amount)} MP</b>\n"
         f"💎 Текущий баланс: <b>{format_number(new_bal)} MP</b></i>",
         parse_mode=ParseMode.HTML
     )
@@ -13983,7 +14136,7 @@ async def cmd_setmp(message: types.Message):
 
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user_id = message.reply_to_message.from_user.id
-        target_name = message.reply_to_message.from_user.first_name
+        target_name = get_user_display_name(message.reply_to_message.from_user.id, message.reply_to_message.from_user.first_name)
     elif len(args) > 1:
         target_arg = args[1]
         if target_arg.startswith("@"):
@@ -14010,12 +14163,11 @@ async def cmd_setmp(message: types.Message):
     get_user(target_user_id)
     update_user(target_user_id, mp_balance=amount)
     await message.reply(
-        f"<i>✅ Баланс MP {target_name} установлен на <b>{format_number(amount)} MP</b></i>",
+        f"<i>✅ Баланс MP {html.escape(get_user_display_name(target_user_id, target_name) if target_name != 'ваш' else target_name)} установлен на <b>{format_number(amount)} MP</b></i>",
         parse_mode=ParseMode.HTML
     )
 
 
-# --- GIVEAWAYS ---
 
 giveaways = {}
 active_giveaways = {}
@@ -14158,7 +14310,7 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
     user_data = get_user(user_id)
     update_user(user_id, balance=user_data["balance"] + amount)
 
-    user_name = html.escape(callback.from_user.first_name or "Игрок")
+    user_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок")
     user_link = f'<a href="tg://user?id={user_id}">{user_name}</a>'
 
     try:
@@ -14191,7 +14343,6 @@ async def process_giveaway_claim(callback: types.CallbackQuery):
             pass
 
 
-# --- ADMIN DEMO MODE ---
 
 
 def _demo_keyboard(user_id):
@@ -14280,7 +14431,7 @@ def _settings_keyboard(user_id):
             InlineKeyboardButton(text=f"{tr(user_id, 'settings_demo')}: {demo_status}", callback_data="settings_demo_off" if demo_enabled else "settings_demo_on", style="danger" if demo_enabled else "success"),
             InlineKeyboardButton(text=tr(user_id, "settings_demo_balance"), callback_data="settings_demo_info", style="primary"),
         ],
-        [InlineKeyboardButton(text=f"{tr(user_id, 'settings_nickname')}: {html.escape(str(nickname))}", callback_data="settings_nickname", style="primary")],
+        [InlineKeyboardButton(text=f"{tr(user_id, 'settings_nickname')}: {str(nickname)}", callback_data="settings_nickname", style="primary")],
         [InlineKeyboardButton(text=tr(user_id, "settings_clear_name"), callback_data="settings_clear_nickname", style="danger")],
         [InlineKeyboardButton(text=f"{tr(user_id, 'settings_hide_top')}: {hide_status}", callback_data="settings_hide_top", style="primary")],
         [InlineKeyboardButton(text=tr(user_id, "settings_back"), callback_data="settings_back")],
@@ -14410,7 +14561,6 @@ async def _handle_settings_text(message: types.Message):
     await _show_settings(message, user_id)
 
 
-# --- OWNERS / ADMIN LIMITS & PERMISSIONS ---
 
 def resolve_user_id_argument(raw):
     raw = (raw or "").strip()
@@ -14747,7 +14897,6 @@ async def cmd_admin_permission(message: types.Message):
     )
 
 
-# --- BAN & UNBAN ADMIN COMMANDS ---
 
 @dp.message(Command("ban", "бан"))
 async def cmd_ban(message: types.Message):
@@ -14766,7 +14915,7 @@ async def cmd_ban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
 
         if len(args) == 0:
             await message.answer("<i>Использование: /ban &lt;причина&gt; &lt;время&gt;\nПример: <code>/ban спам 1ч</code> или <code>/ban нг</code></i>", parse_mode=ParseMode.HTML)
@@ -14832,9 +14981,9 @@ async def cmd_ban(message: types.Message):
         until_text = "навсегда"
 
     if ban_user(target_user_id, reason, until_dt, is_permanent):
-        admin_name = html.escape(message.from_user.first_name or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
         if is_permanent:
             await message.answer(
@@ -14864,7 +15013,7 @@ async def cmd_unban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -14891,9 +15040,9 @@ async def cmd_unban(message: types.Message):
         return
 
     if unban_user(target_user_id):
-        admin_name = html.escape(message.from_user.first_name or "Админ")
+        admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+        target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
         await message.answer(
             f'<i>{admin_link}, пользователь {target_link} успешно разбанен.</i>',
             parse_mode=ParseMode.HTML
@@ -14902,7 +15051,6 @@ async def cmd_unban(message: types.Message):
         await message.answer("<i>Ошибка при разбане пользователя!</i>", parse_mode=ParseMode.HTML)
 
 
-# --- TOP BAN & TRANSFER BAN ADMIN COMMANDS ---
 
 @dp.message(Command("tban"))
 async def cmd_tban(message: types.Message):
@@ -14918,7 +15066,7 @@ async def cmd_tban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -14942,12 +15090,12 @@ async def cmd_tban(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_name = message.from_user.first_name or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
 
     ban_user_top(target_user_id)
-    admin_name = html.escape(message.from_user.first_name or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
         f'<i>{admin_link}, пользователь {target_link} успешно заблокирован в топе! 🚫</i>',
@@ -14969,7 +15117,7 @@ async def cmd_untban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -14993,12 +15141,12 @@ async def cmd_untban(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_name = message.from_user.first_name or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
 
     unban_user_top(target_user_id)
-    admin_name = html.escape(message.from_user.first_name or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
         f'<i>{admin_link}, пользователь {target_link} успешно разблокирован в топе! ✅</i>',
@@ -15020,7 +15168,7 @@ async def cmd_trban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -15044,12 +15192,12 @@ async def cmd_trban(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_name = message.from_user.first_name or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
 
     ban_user_transfers(target_user_id)
-    admin_name = html.escape(message.from_user.first_name or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
         f'<i>{admin_link}, пользователю {target_link} успешно заблокированы переводы! 🚫</i>',
@@ -15071,7 +15219,7 @@ async def cmd_untrban(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -15095,12 +15243,12 @@ async def cmd_untrban(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_name = message.from_user.first_name or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
 
     unban_user_transfers(target_user_id)
-    admin_name = html.escape(message.from_user.first_name or "Админ")
+    admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Админ")
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
-    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(str(target_name))}</a>'
+    target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
 
     await message.answer(
         f'<i>{admin_link}, пользователю {target_link} успешно разблокированы переводы! ✅</i>',
@@ -15108,7 +15256,6 @@ async def cmd_untrban(message: types.Message):
     )
 
 
-# --- GET USER INFO ---
 
 @dp.message(Command("get", "гет"))
 @dp.message(lambda message: message.text and message.text.strip().lower().split()[0] in ["гет", "get", "/get", "/гет"])
@@ -15128,7 +15275,7 @@ async def cmd_get(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_user_name = target_user.first_name or "Игрок"
+        target_user_name = get_user_display_name(target_user.id, target_user.first_name) or "Игрок"
         target_username = target_user.username
     elif len(parts) > 1:
         arg = parts[1]
@@ -15156,7 +15303,7 @@ async def cmd_get(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_user_name = message.from_user.first_name or "Игрок"
+        target_user_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
         target_username = message.from_user.username
 
     u_data = get_user(target_user_id)
@@ -15220,7 +15367,7 @@ async def cmd_get(message: types.Message):
     else:
         last_game_str = '<blockquote><i>Нет сыгранных игр</i></blockquote>'
 
-    clean_target_name = html.escape(str(target_user_name or "Игрок"))
+    clean_target_name = html.escape(get_user_display_name(target_user_id, target_user_name))
     if target_username:
         clean_target_uname = html.escape(str(target_username))
         user_mention = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a> (@{clean_target_uname})'
@@ -15290,7 +15437,7 @@ async def process_adm_reset_rec(callback: types.CallbackQuery):
     target_name = get_user_display_name(target_user_id)
     try:
         await callback.message.reply(
-            f"<i>✅ Рекорды пользователя <b>{html.escape(str(target_name))}</b> (<code>{target_user_id}</code>) сброшены!\n"
+            f"<i>✅ Рекорды пользователя <b>{html.escape(get_user_display_name(target_user_id, target_name))}</b> (<code>{target_user_id}</code>) сброшены!\n"
             f"• Макс. баланс: {format_number(cur_bal)} m¢\n"
             f"• Сыграно игр: 0\n"
             f"• Проиграно: 0 m¢</i>",
@@ -15300,7 +15447,6 @@ async def process_adm_reset_rec(callback: types.CallbackQuery):
         pass
 
 
-# --- TRANSFERS HISTORY (ADMIN) ---
 
 def build_thistory_message(target_user_id, target_name, page=1):
     total_count = get_user_transfers_count(target_user_id)
@@ -15314,7 +15460,7 @@ def build_thistory_message(target_user_id, target_name, page=1):
     offset = (page - 1) * per_page
     rows = get_user_transfers(target_user_id, limit=per_page, offset=offset)
 
-    clean_target_name = html.escape(str(target_name))
+    clean_target_name = html.escape(get_user_display_name(target_user_id, target_name))
     target_link = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a>'
     text = (
         f'💳 <b>История переводов:</b> {target_link} (<code>{target_user_id}</code>)\n'
@@ -15374,7 +15520,7 @@ async def cmd_thistory(message: types.Message):
     if message.reply_to_message and message.reply_to_message.from_user:
         target_user = message.reply_to_message.from_user
         target_user_id = target_user.id
-        target_name = target_user.first_name or "Пользователь"
+        target_name = get_user_display_name(target_user.id, target_user.first_name) or "Пользователь"
     elif args:
         target_arg = args[0]
         if target_arg.startswith("@"):
@@ -15398,7 +15544,7 @@ async def cmd_thistory(message: types.Message):
                 return
     else:
         target_user_id = user_id
-        target_name = message.from_user.first_name or "Администратор"
+        target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Администратор"
 
     text, keyboard = build_thistory_message(target_user_id, target_name, page=1)
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
@@ -15426,7 +15572,6 @@ async def process_thistory_page(callback: types.CallbackQuery):
         pass
 
 
-# --- BANK (DEPOSITS & SAVINGS) & REFERRAL SYSTEM HANDLERS ---
 
 def get_day_declension(days: int) -> str:
     if 11 <= days % 100 <= 19:
@@ -15441,6 +15586,7 @@ def get_day_declension(days: int) -> str:
 
 
 def build_deposit_main_menu(user_id, user_name):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -15495,7 +15641,7 @@ def build_deposit_main_menu(user_id, user_name):
 @dp.message(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"])
 async def cmd_deposit(message: types.Message):
     user_id = message.from_user.id
-    user_name = message.from_user.first_name
+    user_name = get_user_display_name(message.from_user.id, message.from_user.first_name)
     text, keyboard = build_deposit_main_menu(user_id, user_name)
     await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
@@ -15503,7 +15649,7 @@ async def cmd_deposit(message: types.Message):
 @dp.callback_query(lambda c: c.data == "dep_main")
 async def process_dep_main(callback: types.CallbackQuery):
     await callback.answer()
-    text, keyboard = build_deposit_main_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_deposit_main_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15511,6 +15657,7 @@ async def process_dep_main(callback: types.CallbackQuery):
 
 
 def build_time_deposits_menu(user_id, user_name):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -15545,7 +15692,7 @@ def build_time_deposits_menu(user_id, user_name):
 @dp.callback_query(lambda c: c.data == "dep_time")
 async def process_dep_time(callback: types.CallbackQuery):
     await callback.answer()
-    text, keyboard = build_time_deposits_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_time_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15553,6 +15700,7 @@ async def process_dep_time(callback: types.CallbackQuery):
 
 
 def build_deposit_term_input_menu(user_id, user_name, days: int, is_locked: int = 0):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     user_data = get_user(user_id)
@@ -15602,7 +15750,7 @@ async def process_dep_term(callback: types.CallbackQuery):
     parts = callback.data.split("_")
     days = int(parts[2])
     is_locked = int(parts[3]) if len(parts) > 3 else 0
-    text, keyboard = build_deposit_term_input_menu(callback.from_user.id, callback.from_user.first_name, days, is_locked)
+    text, keyboard = build_deposit_term_input_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), days, is_locked)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15644,7 +15792,7 @@ async def process_dep_make(callback: types.CallbackQuery):
         return
 
     await callback.answer("Депозит успешно открыт!")
-    clean_name = html.escape(str(callback.from_user.first_name or "Игрок"))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     end_str = res["end_at"]
@@ -15674,6 +15822,7 @@ async def process_dep_make(callback: types.CallbackQuery):
 
 
 def build_my_deposits_menu(user_id, user_name):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -15731,7 +15880,7 @@ def build_my_deposits_menu(user_id, user_name):
 @dp.callback_query(lambda c: c.data == "dep_my")
 async def process_dep_my(callback: types.CallbackQuery):
     await callback.answer()
-    text, keyboard = build_my_deposits_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_my_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15742,7 +15891,7 @@ async def process_dep_my(callback: types.CallbackQuery):
 async def process_dep_notif_toggle(callback: types.CallbackQuery):
     toggle_bank_notifications(callback.from_user.id)
     await callback.answer("Настройки уведомлений обновлены!")
-    text, keyboard = build_my_deposits_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_my_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15750,6 +15899,7 @@ async def process_dep_notif_toggle(callback: types.CallbackQuery):
 
 
 def build_active_deposits_menu(user_id, user_name, page=1):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -15813,7 +15963,7 @@ async def process_dep_active_all(callback: types.CallbackQuery):
         page = int(callback.data.split("_")[-1])
     except Exception:
         page = 1
-    text, keyboard = build_active_deposits_menu(callback.from_user.id, callback.from_user.first_name, page=page)
+    text, keyboard = build_active_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=page)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15821,11 +15971,12 @@ async def process_dep_active_all(callback: types.CallbackQuery):
 
 
 def build_withdraw_deposits_menu(user_id, user_name, page=1):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
     active_deps = get_active_time_deposits(user_id)
-    unlocked_deps = [d for d in active_deps if not d[5]]  # is_locked == 0
+    unlocked_deps = [d for d in active_deps if not d[5]]
 
     total_count = len(unlocked_deps)
     per_page = 4
@@ -15879,7 +16030,7 @@ async def process_dep_withdraw_menu(callback: types.CallbackQuery):
         page = int(callback.data.split("_")[-1])
     except Exception:
         page = 1
-    text, keyboard = build_withdraw_deposits_menu(callback.from_user.id, callback.from_user.first_name, page=page)
+    text, keyboard = build_withdraw_deposits_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=page)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15894,7 +16045,7 @@ async def process_dep_wd_all(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
     await callback.answer(f"Снято {format_number(res)} mCoin на баланс!")
-    text, keyboard = build_my_deposits_menu(user_id, callback.from_user.first_name)
+    text, keyboard = build_my_deposits_menu(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15913,7 +16064,7 @@ async def process_dep_wd_one(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
     await callback.answer(f"Депозит на {format_number(res)} mCoin возвращен на баланс!")
-    text, keyboard = build_withdraw_deposits_menu(user_id, callback.from_user.first_name, page=1)
+    text, keyboard = build_withdraw_deposits_menu(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=1)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -15921,6 +16072,7 @@ async def process_dep_wd_one(callback: types.CallbackQuery):
 
 
 def build_deposits_history_menu(user_id, user_name, page=1):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
@@ -15989,16 +16141,16 @@ async def process_dep_history(callback: types.CallbackQuery):
         page = int(callback.data.split("_")[-1])
     except Exception:
         page = 1
-    text, keyboard = build_deposits_history_menu(callback.from_user.id, callback.from_user.first_name, page=page)
+    text, keyboard = build_deposits_history_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), page=page)
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
-# --- SAVINGS ACCOUNT (НАКОПИТЕЛЬНЫЙ СЧЕТ) ---
 
 def build_savings_menu(user_id, user_name):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     sav = get_savings_account(user_id)
@@ -16041,7 +16193,7 @@ def build_savings_menu(user_id, user_name):
 @dp.callback_query(lambda c: c.data == "dep_savings")
 async def process_dep_savings(callback: types.CallbackQuery):
     await callback.answer()
-    text, keyboard = build_savings_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_savings_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
     except Exception:
@@ -16049,6 +16201,7 @@ async def process_dep_savings(callback: types.CallbackQuery):
 
 
 def build_savings_deposit_input_menu(user_id, user_name):
+    user_name = get_user_display_name(user_id, user_name)
     clean_name = html.escape(str(user_name or "Игрок"))
     user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
     user_data = get_user(user_id)
@@ -16072,7 +16225,7 @@ def build_savings_deposit_input_menu(user_id, user_name):
 @dp.callback_query(lambda c: c.data == "dep_sav_dep")
 async def process_dep_sav_dep(callback: types.CallbackQuery):
     await callback.answer()
-    text, keyboard = build_savings_deposit_input_menu(callback.from_user.id, callback.from_user.first_name)
+    text, keyboard = build_savings_deposit_input_menu(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     try:
         await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
     except Exception:
@@ -16082,7 +16235,7 @@ async def process_dep_sav_dep(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "dep_sav_wd")
 async def process_dep_sav_wd(callback: types.CallbackQuery):
     await callback.answer()
-    clean_name = html.escape(str(callback.from_user.first_name or "Игрок"))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
     user_link = f'<a href="tg://user?id={callback.from_user.id}">{clean_name}</a>'
     sav = get_savings_account(callback.from_user.id)
     sav_bal = sav.get("balance", 0)
@@ -16118,7 +16271,7 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
     history = get_savings_history(uid, limit=5, offset=(page-1)*5)
     total_cnt = get_savings_history_count(uid)
     total_pages = max(1, math.ceil(total_cnt / 5))
-    clean_name = html.escape(str(callback.from_user.first_name or "Игрок"))
+    clean_name = html.escape(str(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or "Игрок"))
     user_link = f'<a href="tg://user?id={uid}">{clean_name}</a>'
 
     text = f'{user_link}\n📜 <b>История накопительного счета</b>\n<code>·····················</code>\n'
@@ -16145,7 +16298,6 @@ async def process_dep_sav_hist(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- REPLY TO BANK PROMPTS HANDLER (CUSTOM AMOUNT) ---
 
 @dp.message(lambda message: message.reply_to_message and message.text and (
     "ДЕПОЗИТ НА" in (message.reply_to_message.text or message.reply_to_message.caption or "") or
@@ -16160,7 +16312,6 @@ async def process_bank_reply_message(message: types.Message):
     if raw_amount is None or raw_amount <= 0:
         return
 
-    # Check if replied to "ДЕПОЗИТ НА X ДНЕЙ"
     if "ДЕПОЗИТ НА" in rep_text:
         m = re.search(r'ДЕПОЗИТ НА (\d+)', rep_text)
         if m:
@@ -16170,7 +16321,7 @@ async def process_bank_reply_message(message: types.Message):
             if not ok:
                 await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
                 return
-            clean_name = html.escape(str(message.from_user.first_name or "Игрок"))
+            clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
             user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
             rate_str = str(res["percent"]).replace(".", ",")
             succ_text = (
@@ -16188,13 +16339,12 @@ async def process_bank_reply_message(message: types.Message):
             await message.reply(succ_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
             return
 
-    # Check if replied to "ПОПОЛНИТЬ НАКОП. СЧЕТ"
     if "ПОПОЛНИТЬ НАКОП. СЧЕТ" in rep_text:
         ok, res = deposit_to_savings(user_id, raw_amount)
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        clean_name = html.escape(str(message.from_user.first_name or "Игрок"))
+        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
         user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
         succ_text = (
             f'{user_link}\n'
@@ -16211,13 +16361,12 @@ async def process_bank_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
-    # Check if replied to "СНЯТЬ С НАКОП. СЧЕТА"
     if "СНЯТЬ С НАКОП. СЧЕТА" in rep_text:
         ok, res = withdraw_from_savings(user_id, raw_amount)
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        clean_name = html.escape(str(message.from_user.first_name or "Игрок"))
+        clean_name = html.escape(str(get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"))
         user_link = f'<a href="tg://user?id={user_id}">{clean_name}</a>'
         succ_text = (
             f'🟢 {user_link}, ты вывел с накопительного счета <b>{format_number(res["withdrawn"])} mCoin!</b>\n'
@@ -16231,9 +16380,6 @@ async def process_bank_reply_message(message: types.Message):
         return
 
 
-# ==========================================
-# --- P2P EXCHANGE SYSTEM (MPOINT ⇄ mCoin) ---
-# ==========================================
 
 p2p_user_action = {}
 admin_sexchange_state = {}
@@ -16373,6 +16519,7 @@ def get_p2p_bot_24h_stats():
     return row[0], row[1]
 
 
+@db_transaction
 def deposit_to_p2p_mcoin(user_id, amount):
     amount = int(amount)
     if amount <= 0:
@@ -16412,6 +16559,7 @@ def deposit_to_p2p_mcoin(user_id, amount):
         return False, f"Ошибка пополнения: {e}"
 
 
+@db_transaction
 def deposit_to_p2p_mpoint(user_id, amount):
     amount = int(amount)
     if amount <= 0:
@@ -16419,6 +16567,7 @@ def deposit_to_p2p_mpoint(user_id, amount):
     if is_transfer_banned(user_id):
         return False, "Вам заблокированы переводы!"
 
+    get_p2p_account(user_id)
     user_data = get_user(user_id)
     if user_data.get("mp_balance", 0) < amount:
         return False, f"Недостаточно MPOINT! На балансе: {format_number(user_data.get('mp_balance', 0))} MP."
@@ -16441,6 +16590,7 @@ def deposit_to_p2p_mpoint(user_id, amount):
         return False, f"Ошибка пополнения: {e}"
 
 
+@db_transaction
 def withdraw_from_p2p_mcoin(user_id, amount):
     amount = int(amount)
     if amount <= 0:
@@ -16453,7 +16603,7 @@ def withdraw_from_p2p_mcoin(user_id, amount):
         if cursor.rowcount == 0:
             return False, "Недостаточно mCoin на балансе обменника!"
 
-        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (amount, amount, user_id))
         conn.commit()
 
         updated_p2p = get_p2p_account(user_id)
@@ -16465,6 +16615,7 @@ def withdraw_from_p2p_mcoin(user_id, amount):
         return False, f"Ошибка вывода: {e}"
 
 
+@db_transaction
 def withdraw_from_p2p_mpoint(user_id, amount):
     amount = int(amount)
     if amount <= 0:
@@ -16489,6 +16640,7 @@ def withdraw_from_p2p_mpoint(user_id, amount):
         return False, f"Ошибка вывода: {e}"
 
 
+@db_transaction
 def execute_p2p_buy_deal(buyer_id, seller_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
@@ -16518,7 +16670,7 @@ def execute_p2p_buy_deal(buyer_id, seller_id, amount_mp):
             conn.commit()
             return False, "У продавца изменился баланс или заявка отключена!"
 
-        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_cost, total_cost, seller_id))
+        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (total_cost, total_cost, seller_id))
         cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount_mp, buyer_id))
         cursor.execute("UPDATE p2p_accounts SET deals_count = deals_count + 1 WHERE user_id = ?", (buyer_id,))
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
@@ -16541,6 +16693,7 @@ def execute_p2p_buy_deal(buyer_id, seller_id, amount_mp):
         return False, f"Ошибка проведения сделки: {e}"
 
 
+@db_transaction
 def execute_p2p_buy_from_bot(user_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
@@ -16576,6 +16729,7 @@ def execute_p2p_buy_from_bot(user_id, amount_mp):
         return False, f"Ошибка сделки: {e}"
 
 
+@db_transaction
 def execute_p2p_sell_to_bot(user_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
@@ -16592,7 +16746,7 @@ def execute_p2p_sell_to_bot(user_id, amount_mp):
     total_mcoin = amount_mp * rate
     try:
         now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
-        cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, user_id, amount_mp))
+        cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, user_id, amount_mp))
         if cursor.rowcount == 0:
             return False, "Недостаточно MP на балансе!"
 
@@ -16611,6 +16765,7 @@ def execute_p2p_sell_to_bot(user_id, amount_mp):
         return False, f"Ошибка сделки: {e}"
 
 
+@db_transaction
 def execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp):
     amount_mp = int(amount_mp)
     if amount_mp <= 0:
@@ -16627,7 +16782,7 @@ def execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp):
     total_mcoin = amount_mp * buyer_p2p["buy_price"]
 
     try:
-        cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, seller_id, amount_mp))
+        cursor.execute("UPDATE users SET mp_balance = mp_balance - ?, balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ? AND mp_balance >= ?", (amount_mp, total_mcoin, total_mcoin, seller_id, amount_mp))
         if cursor.rowcount == 0:
             return False, "Недостаточно MP на основном балансе!"
 
@@ -16659,12 +16814,11 @@ def execute_p2p_sell_to_buyer(seller_id, buyer_id, amount_mp):
         return False, f"Ошибка проведения сделки: {e}"
 
 
-# --- P2P UI RENDERING HELPERS ---
 
 async def show_p2p_main(event, user_id=None, first_name=None, edit=False):
     if hasattr(event, "from_user") and event.from_user:
         uid = user_id or event.from_user.id
-        fname = first_name or event.from_user.first_name or "Игрок"
+        fname = first_name or get_user_display_name(event.from_user.id, event.from_user.first_name) or "Игрок"
     else:
         uid = user_id
         fname = first_name or "Игрок"
@@ -16682,7 +16836,6 @@ async def show_p2p_main(event, user_id=None, first_name=None, edit=False):
         f'<tg-emoji emoji-id="5470177992950946662">👇</tg-emoji> {user_link}, что ты хочешь?'
     )
 
-    # Buttons layout: КУПИТЬ on top, ПРОДАТЬ below, Manage & History at bottom
     keyboard = InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -16825,12 +16978,10 @@ def render_p2p_history(user_id, page=1):
         for buyer_id, seller_id, amount_mp, price_per_mp, total_mcoin, commission, created_at in rows:
             date_short = format_deal_date(created_at)
             if buyer_id == user_id:
-                # Bought (К)
                 partner = "Оф. Покупка" if seller_id == 0 else get_user_display_name(seller_id)
                 lines.append(f'💰(К) {format_number(amount_mp)} GMP за {format_number(total_mcoin)} m¢')
                 lines.append(f'⤷ <i>{partner} · {date_short}</i>')
             else:
-                # Sold (П)
                 partner = "Оф. Продажа" if buyer_id == 0 else get_user_display_name(buyer_id)
                 lines.append(f'💳(П) {format_number(amount_mp)} GMP за {format_number(total_mcoin)} m¢')
                 lines.append(f'⤷ <i>{partner} · {date_short}</i>')
@@ -16934,7 +17085,6 @@ def render_sexchange_menu():
     return text, keyboard
 
 
-# --- P2P COMMAND HANDLERS ---
 
 @dp.message(Command("exchange", "обменник"))
 @dp.message(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"])
@@ -16953,7 +17103,7 @@ async def cmd_exchange(message: types.Message):
         await message.reply("<i>Эта команда работает только в личных сообщениях!</i>", reply_markup=keyboard, parse_mode=ParseMode.HTML)
         return
 
-    await show_p2p_main(message, user_id=message.from_user.id, first_name=message.from_user.first_name)
+    await show_p2p_main(message, user_id=message.from_user.id, first_name=get_user_display_name(message.from_user.id, message.from_user.first_name))
 
 
 @dp.message(Command("sexchange", "setexchange"))
@@ -16965,13 +17115,12 @@ async def cmd_sexchange(message: types.Message):
     await message.reply(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-# --- P2P CALLBACK QUERIES ---
 
 @dp.callback_query(lambda c: c.data == "p2p_main")
 async def cb_p2p_main(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer()
-    await show_p2p_main(callback, user_id=callback.from_user.id, first_name=callback.from_user.first_name, edit=True)
+    await show_p2p_main(callback, user_id=callback.from_user.id, first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name), edit=True)
 
 
 @dp.callback_query(lambda c: c.data in ["p2p_history", "p2p_hist_1"] or c.data.startswith("p2p_hist_"))
@@ -17032,7 +17181,6 @@ async def cb_p2p_toggle_buy(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- BUY MP HANDLERS ---
 
 @dp.callback_query(lambda c: c.data in ["p2p_buy_list"] or c.data.startswith("p2p_buy_page_"))
 async def cb_p2p_buy_list(callback: types.CallbackQuery):
@@ -17115,7 +17263,6 @@ async def cb_p2p_buy_list(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
-# --- OFFICIAL BUY FROM BOT ---
 
 @dp.callback_query(lambda c: c.data == "p2p_buy_bot")
 async def cb_p2p_buy_bot(callback: types.CallbackQuery):
@@ -17203,7 +17350,7 @@ async def cb_p2p_buy_bot_amount(callback: types.CallbackQuery):
     user_u = get_user(callback.from_user.id)
     total_cost = amount_mp * buy_rate
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     if user_u["balance"] < total_cost:
         shortage = total_cost - user_u["balance"]
         err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} mCoin!</b></i>"
@@ -17251,7 +17398,7 @@ async def cb_p2p_confirm_buy_bot(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '🎉 <b>УСПЕШНАЯ ПОКУПКА MPOINT</b>\n'
         '<code>·····················</code>\n'
@@ -17341,7 +17488,7 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
     seller_p2p = get_p2p_account(seller_id)
     buyer_id = callback.from_user.id
     buyer_u = get_user(buyer_id)
-    buyer_link = get_user_mention(buyer_id, callback.from_user.first_name)
+    buyer_link = get_user_mention(buyer_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
     total_cost = amount_mp * seller_p2p["sell_price"]
     if buyer_u["balance"] < total_cost:
@@ -17381,7 +17528,7 @@ async def cb_p2p_buy_amount_choice(callback: types.CallbackQuery):
 async def cb_p2p_cancel_buy(callback: types.CallbackQuery):
     p2p_user_action.pop(callback.from_user.id, None)
     await callback.answer("Сделка отменена!")
-    await show_p2p_main(callback, user_id=callback.from_user.id, first_name=callback.from_user.first_name, edit=True)
+    await show_p2p_main(callback, user_id=callback.from_user.id, first_name=get_user_display_name(callback.from_user.id, callback.from_user.first_name), edit=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("p2p_conf_buy_"))
@@ -17400,7 +17547,7 @@ async def cb_p2p_confirm_buy(callback: types.CallbackQuery):
         return
 
     seller_name = get_user_display_name(seller_id)
-    buyer_link = get_user_mention(buyer_id, callback.from_user.first_name)
+    buyer_link = get_user_mention(buyer_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n'
         '<code>·····················</code>\n'
@@ -17460,7 +17607,6 @@ async def cb_p2p_rate_deal(callback: types.CallbackQuery):
         pass
 
 
-# --- SELL MP HANDLERS ---
 
 @dp.callback_query(lambda c: c.data in ["p2p_sell_list"] or c.data.startswith("p2p_sell_page_"))
 async def cb_p2p_sell_list(callback: types.CallbackQuery):
@@ -17610,7 +17756,7 @@ async def cb_p2p_sell_bot_amount(callback: types.CallbackQuery):
     settings = get_p2p_settings()
     sell_rate = settings.get("official_sell_rate", 10000)
     user_u = get_user(callback.from_user.id)
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
     if user_u.get("mp_balance", 0) < amount_mp:
         shortage = amount_mp - user_u.get("mp_balance", 0)
@@ -17660,7 +17806,7 @@ async def cb_p2p_confirm_sell_bot(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '🎉 <b>УСПЕШНАЯ ПРОДАЖА</b>\n'
         '<code>·····················</code>\n'
@@ -17754,7 +17900,7 @@ async def cb_p2p_sell_buyer_amount(callback: types.CallbackQuery):
     buyer_p2p = get_p2p_account(buyer_id)
     seller_id = callback.from_user.id
     seller_u = get_user(seller_id)
-    seller_link = get_user_mention(seller_id, callback.from_user.first_name)
+    seller_link = get_user_mention(seller_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
     if seller_u.get("mp_balance", 0) < amount_mp:
         shortage = amount_mp - seller_u.get("mp_balance", 0)
@@ -17806,7 +17952,7 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
         return
 
     buyer_name = get_user_display_name(buyer_id)
-    seller_link = get_user_mention(seller_id, callback.from_user.first_name)
+    seller_link = get_user_mention(seller_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '🎉 <b>УСПЕШНАЯ СДЕЛКА</b>\n'
         '<code>·····················</code>\n'
@@ -17832,7 +17978,6 @@ async def cb_p2p_confirm_sell_buyer(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- P2P DEPOSIT & WITHDRAW HANDLERS ---
 
 @dp.callback_query(lambda c: c.data == "p2p_deposit")
 async def cb_p2p_deposit(callback: types.CallbackQuery):
@@ -17912,7 +18057,7 @@ async def cb_p2p_dep_mcoin_amount(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     comm_str = "<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>" if res["is_first"] else f"<blockquote><b>🔘 Комиссия: 1,5% ({format_number(res['fee'])} mCoin)</b></blockquote>"
     succ_text = (
         '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
@@ -17980,7 +18125,7 @@ async def cb_p2p_dep_mpoint_amount(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
         '<code>·····················</code>\n'
@@ -18071,7 +18216,7 @@ async def cb_p2p_wth_mcoin_amount(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
         '<code>·····················</code>\n'
@@ -18135,7 +18280,7 @@ async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
         await callback.answer(f"Ошибка: {res}", show_alert=True)
         return
 
-    user_link = get_user_mention(callback.from_user.id, callback.from_user.first_name)
+    user_link = get_user_mention(callback.from_user.id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     succ_text = (
         '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
         '<code>·····················</code>\n'
@@ -18151,7 +18296,6 @@ async def cb_p2p_wth_mpoint_amount(callback: types.CallbackQuery):
         await callback.message.answer(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- SET PRICE HANDLERS ---
 
 @dp.callback_query(lambda c: c.data == "p2p_set_sell_price")
 async def cb_p2p_set_sell_price(callback: types.CallbackQuery):
@@ -18194,7 +18338,6 @@ async def cb_noop_p2p(callback: types.CallbackQuery):
     await callback.answer()
 
 
-# --- ADMIN SEXCHANGE CALLBACKS ---
 
 @dp.callback_query(lambda c: c.data == "sexch_refresh")
 async def cb_sexch_refresh(callback: types.CallbackQuery):
@@ -18334,7 +18477,6 @@ async def cb_sexch_set_interval(callback: types.CallbackQuery):
         await callback.message.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- P2P & ADMIN EXCHANGE TEXT / REPLY HANDLER ---
 
 @dp.message(lambda message: message.text and (
     message.from_user.id in admin_sexchange_state or
@@ -18363,7 +18505,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
     user_action = p2p_user_action.get(user_id)
     admin_action = admin_sexchange_state.get(user_id)
 
-    # 1. Admin Sexchange State Actions
     if admin_action and user_id in ADMINS:
         if admin_action == "set_sell_rate":
             val = parse_amount(raw_text)
@@ -18426,7 +18567,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
 
     raw_amount = parse_amount(raw_text)
 
-    # 2. Change sell price
     if user_action == "set_sell_price" or "ИЗМЕНИТЬ КУРС ПРОДАЖИ" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18441,7 +18581,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 3. Change buy price
     if user_action == "set_buy_price" or "ИЗМЕНИТЬ КУРС ПОКУПКИ" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Курс должен быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18456,7 +18595,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 4. Deposit mCoin
     if user_action == "dep_mcoin" or "ПОПОЛНЕНИЕ mCoin" in rep_text or "Сколько mCoin пополняем?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18466,7 +18604,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         comm_str = "<blockquote><b>🆓 Комиссия не списана (1-е пополнение за день)</b></blockquote>" if res["is_first"] else f"<blockquote><b>🔘 Комиссия: 1,5% ({format_number(res['fee'])} mCoin)</b></blockquote>"
         succ_text = (
             '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
@@ -18482,7 +18620,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 5. Deposit MPOINT
     if user_action == "dep_mpoint" or "ПОПОЛНЕНИЕ MPOINT" in rep_text or "Сколько MPOINT пополняем?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18492,7 +18629,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
             '✅ <b>УСПЕШНОЕ ПОПОЛНЕНИЕ</b>\n'
             '<code>·····················</code>\n'
@@ -18507,7 +18644,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 6. Withdraw mCoin
     if user_action == "wth_mcoin" or "ВЫВОД mCoin" in rep_text or "Сколько mCoin выводим?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18517,7 +18653,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
             '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
             '<code>·····················</code>\n'
@@ -18530,7 +18666,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 7. Withdraw MPOINT
     if user_action == "wth_mpoint" or "ВЫВОД MPOINT" in rep_text or "Сколько MPOINT выводим?" in rep_text:
         if raw_amount is None or raw_amount <= 0:
             await message.reply("<i>Сумма должна быть положительным числом!</i>", parse_mode=ParseMode.HTML)
@@ -18540,7 +18675,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         if not ok:
             await message.reply(f"<i>Ошибка: {res}</i>", parse_mode=ParseMode.HTML)
             return
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         succ_text = (
             '✅ <b>УСПЕШНЫЙ ВЫВОД</b>\n'
             '<code>·····················</code>\n'
@@ -18553,7 +18688,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(succ_text, reply_markup=kb, parse_mode=ParseMode.HTML)
         return
 
-    # 8. Buy MPOINT from Bot (Official Buy custom amount)
     if user_action == "buy_bot_custom" or ("КУПИТЬ MPOINT" in rep_text and "Оф. Покупка" in rep_text):
         if raw_amount is None or raw_amount <= 0:
             return
@@ -18562,7 +18696,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         settings = get_p2p_settings()
         buy_rate = settings.get("official_buy_rate", 10000)
         user_u = get_user(user_id)
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         total_cost = raw_amount * buy_rate
 
         if user_u["balance"] < total_cost:
@@ -18592,7 +18726,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
         return
 
-    # 9. Buy MPOINT from Seller Card
     if (user_action and user_action.startswith("buy_seller_")) or ("КУПИТЬ MPOINT" in rep_text and "Продавец:" in rep_text):
         if raw_amount is None or raw_amount <= 0:
             return
@@ -18607,7 +18740,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         p2p_user_action.pop(user_id, None)
         seller_p2p = get_p2p_account(seller_id)
         buyer_u = get_user(user_id)
-        buyer_link = get_user_mention(user_id, message.from_user.first_name)
+        buyer_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
 
         total_cost = raw_amount * seller_p2p["sell_price"]
         if buyer_u["balance"] < total_cost:
@@ -18637,7 +18770,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
         return
 
-    # 10. Sell MPOINT to Bot (Official Sell custom amount)
     if user_action == "sell_bot_custom" or ("ПРОДАТЬ MPOINT" in rep_text and "Оф. Продажа" in rep_text):
         if raw_amount is None or raw_amount <= 0:
             return
@@ -18646,7 +18778,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         settings = get_p2p_settings()
         sell_rate = settings.get("official_sell_rate", 10000)
         user_u = get_user(user_id)
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         if user_u.get("mp_balance", 0) < raw_amount:
             shortage = raw_amount - user_u.get("mp_balance", 0)
             err_text = f"🚫 <i>{user_link}, не хватает <b>{format_number(shortage)} MP!</b></i>"
@@ -18675,7 +18807,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         await message.reply(conf_text, reply_markup=conf_kb, parse_mode=ParseMode.HTML)
         return
 
-    # 11. Sell MPOINT to Player Buyer
     if (user_action and user_action.startswith("sell_buyer_")) or ("ПРОДАТЬ MPOINT" in rep_text and "Покупатель:" in rep_text):
         if raw_amount is None or raw_amount <= 0:
             return
@@ -18690,7 +18821,7 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
         p2p_user_action.pop(user_id, None)
         buyer_p2p = get_p2p_account(buyer_id)
         seller_u = get_user(user_id)
-        seller_link = get_user_mention(user_id, message.from_user.first_name)
+        seller_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
 
         if seller_u.get("mp_balance", 0) < raw_amount:
             shortage = raw_amount - seller_u.get("mp_balance", 0)
@@ -18717,9 +18848,6 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                 ]
             ]
         )
-# ==============================================================================
-# --- ПОДАРОЧНЫЙ ХРАМ (GIFT TEMPLE) ---
-# ==============================================================================
 
 TEMPLE_GIFTS = {
     "heart": {
@@ -18905,7 +19033,6 @@ async def show_temple_target_selected(event, sender_id: int, sender_name: str, t
         await event.answer(text, reply_markup=kb, parse_mode=ParseMode.HTML)
 
 
-# --- TEMPLE COMMANDS & CALLBACKS ---
 
 @dp.message(Command("temple", "храм"))
 @dp.message(lambda message: message.text and re.match(r'^[!/.]?(храм|temple)(\s+|$)', message.text, re.IGNORECASE))
@@ -18914,7 +19041,6 @@ async def cmd_temple(message: types.Message):
     raw_text = message.text.strip()
     parts = re.split(r'\s+', raw_text, maxsplit=1)
     
-    # If target specified (e.g. "храм @kleymorf" or reply)
     if len(parts) > 1 or (message.reply_to_message and message.reply_to_message.from_user):
         arg = parts[1].strip() if len(parts) > 1 else ""
         target_id = await resolve_temple_target(message, arg)
@@ -18922,10 +19048,9 @@ async def cmd_temple(message: types.Message):
             await message.reply("<i>Пользователь не найден! Укажите корректный @username или ID.</i>", parse_mode=ParseMode.HTML)
             return
         _temple_user_target[user_id] = target_id
-        await show_temple_target_selected(message, user_id, message.from_user.first_name, target_id)
+        await show_temple_target_selected(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), target_id)
         return
 
-    # No target: show main temple intro
     text = (
         '[NEW] <tg-emoji emoji-id="5834781387365818180">🎁</tg-emoji><b> Подарочный храм</b>\n\n'
         '<tg-emoji emoji-id="5942877472163892475">👥</tg-emoji> В подарочном храме ты сможешь:\n'
@@ -18951,9 +19076,8 @@ async def cmd_temple(message: types.Message):
 async def cb_temple_enter(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     
-    # Send sticker and delete after 2 seconds
     sticker_id = "CAACAgUAAxkBAAERq7xqdMNBP-oO2yCEC4DAChXoLQVFjgACCgQAAjHHqVblSt_BbuOy8D0E"
     try:
         st_msg = await callback.message.answer_sticker(sticker_id)
@@ -18993,7 +19117,7 @@ async def cb_temple_change_target(callback: types.CallbackQuery):
     await callback.answer()
     user_id = callback.from_user.id
     _temple_waiting_target.add(user_id)
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
         f'{user_link}\n'
         f'<tg-emoji emoji-id="5472096095280569232">🎁</tg-emoji> Отправьте @username или ID получателя (или введите <code>храм &lt;username/id&gt;</code>):'
@@ -19009,7 +19133,7 @@ async def cb_temple_back_target(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_back_target_", ""))
     user_id = callback.from_user.id
-    await show_temple_target_selected(callback, user_id, callback.from_user.first_name, target_id, edit=True)
+    await show_temple_target_selected(callback, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), target_id, edit=True)
 
 
 @dp.callback_query(lambda c: c.data.startswith("temple_gifts_"))
@@ -19017,7 +19141,7 @@ async def cb_temple_gifts(callback: types.CallbackQuery):
     await callback.answer()
     target_id = int(callback.data.replace("temple_gifts_", ""))
     user_id = callback.from_user.id
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
     
     text = (
@@ -19056,7 +19180,7 @@ async def cb_temple_select_gift(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
     gift = TEMPLE_GIFTS.get(gift_key, TEMPLE_GIFTS["heart"])
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
     
     comment = _temple_user_comment.get(user_id, "")
@@ -19094,7 +19218,7 @@ async def cb_temple_add_comment(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     
     _temple_waiting_comment[user_id] = (target_id, gift_key)
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
         f'{user_link}\n'
         f'✍️ <b>Напишите комментарий к подарку в чат:</b>'
@@ -19150,17 +19274,15 @@ async def cb_temple_successful_payment(message: types.Message):
     
     record_temple_gift(sender_id, target_id, gift_key, gift["name"], gift["stars"], comment)
     
-    # Attempt real Telegram gift delivery
     asyncio.create_task(deliver_telegram_gift(target_id, gift_key, comment))
     
-    sender_link = get_user_mention(sender_id, message.from_user.first_name)
+    sender_link = get_user_mention(sender_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
     succ_text = (
         f'{sender_link}\n'
         f'<tg-emoji emoji-id="5472180551517477902">✅</tg-emoji> Ваша заявка обрабатывается!'
     )
     await message.answer(succ_text, parse_mode=ParseMode.HTML)
     
-    # Notify recipient
     if sender_id == target_id:
         try:
             self_notify = (
@@ -19192,7 +19314,6 @@ async def process_temple_text_input(message: types.Message):
     user_id = message.from_user.id
     raw_text = message.text.strip()
 
-    # If user sent a command, cancel waiting state and let other handlers process
     if raw_text.startswith("/") and not raw_text.lower().startswith(("/храм", "/temple")):
         _temple_waiting_comment.pop(user_id, None)
         _temple_waiting_target.discard(user_id)
@@ -19202,7 +19323,7 @@ async def process_temple_text_input(message: types.Message):
         target_id, gift_key = _temple_waiting_comment.pop(user_id)
         _temple_user_comment[user_id] = raw_text
         gift = TEMPLE_GIFTS.get(gift_key, TEMPLE_GIFTS["heart"])
-        user_link = get_user_mention(user_id, message.from_user.first_name)
+        user_link = get_user_mention(user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
         target_link = "самому себе" if target_id == user_id else get_user_mention(target_id)
         text = (
             f'{user_link}\n'
@@ -19226,7 +19347,6 @@ async def process_temple_text_input(message: types.Message):
 
     if user_id in _temple_waiting_target:
         _temple_waiting_target.discard(user_id)
-        # Strip command prefix if user wrote "храм @username"
         lookup_target = raw_text
         if lookup_target.lower().startswith(("храм ", "/храм ", "!храм ", "temple ", "/temple ")):
             lookup_target = lookup_target.split(None, 1)[1].strip()
@@ -19236,11 +19356,10 @@ async def process_temple_text_input(message: types.Message):
             await message.reply("<i>Пользователь не найден! Укажите корректный @username или ID.</i>", parse_mode=ParseMode.HTML)
             return
         _temple_user_target[user_id] = target_user
-        await show_temple_target_selected(message, user_id, message.from_user.first_name, target_user)
+        await show_temple_target_selected(message, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), target_user)
         return
 
 
-# --- BANK BACKGROUND TASKS ---
 
 async def check_time_deposits_task():
     while True:
@@ -19258,7 +19377,7 @@ async def check_time_deposits_task():
                     cursor.execute("UPDATE time_deposits SET status = 'completed' WHERE id = ? AND status = 'active'", (dep_id,))
                     if cursor.rowcount > 0:
                         payout = amount + profit
-                        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = GREATEST(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (payout, payout, uid))
+                        cursor.execute("UPDATE users SET balance = balance + ?, max_balance = MAX(COALESCE(max_balance, 0), balance + ?) WHERE user_id = ?", (payout, payout, uid))
                         conn.commit()
 
                         settings = get_bank_settings(uid)
@@ -19324,10 +19443,8 @@ async def p2p_rate_updater_task():
         await asyncio.sleep(30)
 
 
-# --- P2P PROMOTIONS (/promote, продвижение) ---
 
 promote_user_states = {}
-# State: { "target_type": "channel"|"chat", "step": "price"|"subs"|"wait_chat", "price": 1, "subs": 1, "msg_ids": [] }
 
 
 def get_promote_main_markup():
@@ -19557,14 +19674,14 @@ async def cmd_promote(message: types.Message):
 
     user_id = message.from_user.id
     promote_user_states.pop(user_id, None)
-    await send_promote_main_menu(message.chat.id, user_id, message.from_user.first_name)
+    await send_promote_main_menu(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name))
 
 
 @dp.callback_query(lambda c: c.data == "promote_menu")
 async def process_promote_menu(callback: types.CallbackQuery):
     user_id = callback.from_user.id
     promote_user_states.pop(user_id, None)
-    await send_promote_main_menu(callback.message.chat.id, user_id, callback.from_user.first_name, message_to_edit=callback.message)
+    await send_promote_main_menu(callback.message.chat.id, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), message_to_edit=callback.message)
     await callback.answer()
 
 
@@ -19577,7 +19694,7 @@ async def process_promote_type(callback: types.CallbackQuery):
         "step": "price"
     }
 
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     text = (
         f'<tg-emoji emoji-id="5373012449597335010">👤</tg-emoji> <i>{user_link}, напиши цену за 1 подписчика!\n'
         f'----------------------\n'
@@ -19612,7 +19729,7 @@ async def process_promote_price_choice(callback: types.CallbackQuery):
     except Exception:
         price = 1
 
-    await handle_promote_price_selected(callback.message.chat.id, user_id, callback.from_user.first_name, price, message_to_edit=callback.message)
+    await handle_promote_price_selected(callback.message.chat.id, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), price, message_to_edit=callback.message)
     await callback.answer()
 
 
@@ -19682,7 +19799,7 @@ async def process_promote_subs_choice(callback: types.CallbackQuery):
     except Exception:
         count = 1
 
-    await handle_promote_subs_selected(callback.message.chat.id, user_id, callback.from_user.first_name, count, message_to_edit=callback.message)
+    await handle_promote_subs_selected(callback.message.chat.id, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name), count, message_to_edit=callback.message)
     await callback.answer()
 
 
@@ -19713,7 +19830,6 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
         except Exception:
             pass
 
-    # Message 1
     text1 = (
         '<tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji> ВАЖНО <tg-emoji emoji-id="5274099962655816924">❗️</tg-emoji>\n'
         '<blockquote>Канал/чат не должен нарушать правила Telegram. В случае нарушения мы ограничим доступ к боту навсегда.</blockquote>\n'
@@ -19721,7 +19837,6 @@ async def handle_promote_subs_selected(chat_id: int, user_id: int, first_name: s
     )
     msg1 = await bot.send_message(chat_id, text1, parse_mode=ParseMode.HTML)
 
-    # Message 2 with cancel inline button and reply keyboard for chat_shared
     text2 = '<i>⛓💥"Хотите отменить добавление? Если нет, выберите кнопку на клавиатуре.👇</i>'
     kb_cancel = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Отмена", callback_data="promote_cancel", style="danger")]])
     msg2 = await bot.send_message(chat_id, text2, reply_markup=kb_cancel, parse_mode=ParseMode.HTML)
@@ -19813,7 +19928,7 @@ async def process_promote_cancel(callback: types.CallbackQuery):
     except Exception:
         pass
 
-    await send_promote_main_menu(callback.message.chat.id, user_id, callback.from_user.first_name)
+    await send_promote_main_menu(callback.message.chat.id, user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
     await callback.answer()
 
 
@@ -19833,12 +19948,14 @@ async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, 
     now_iso = get_msk_now().isoformat()
     clean_username = (chat_username or "").strip().lstrip("@")
     try:
-        cursor.execute("UPDATE users SET mp_balance = COALESCE(mp_balance, 0) - ? WHERE user_id = ?", (total_cost, user_id))
-        cursor.execute("""
-            INSERT INTO p2p_promotions (user_id, chat_id, chat_title, chat_username, chat_type, price_per_sub, total_subs, completed_subs, total_spent, is_active, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, TRUE, ?)
-        """, (user_id, real_chat_id, chat_title, clean_username, target_type, price, subs, total_cost, now_iso))
-        conn.commit()
+        with conn:
+            cursor.execute("UPDATE users SET mp_balance = COALESCE(mp_balance, 0) - ? WHERE user_id = ? AND COALESCE(mp_balance, 0) >= ?", (total_cost, user_id, total_cost))
+            if cursor.rowcount != 1:
+                raise ValueError("Insufficient MP balance")
+            cursor.execute("""
+                INSERT INTO p2p_promotions (user_id, chat_id, chat_title, chat_username, chat_type, price_per_sub, total_subs, completed_subs, total_spent, is_active, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, 1, ?)
+            """, (user_id, real_chat_id, chat_title, clean_username, target_type, price, subs, total_cost, now_iso))
     except Exception as e:
         logging.error(f"Failed to insert p2p_promotion: {e}")
         await message.answer("<i>Произошла ошибка при сохранении задания. Попробуйте снова.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
@@ -19847,7 +19964,7 @@ async def finalize_p2p_promotion_creation(message: types.Message, user_id: int, 
     target_ru = "канал" if target_type == "channel" else "чат"
     target_label = f"@{clean_username}" if clean_username else chat_title
     succ_text = (
-        f'<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji><i>{first_name}, твой {target_ru} {target_label} успешно добавлен!</i>'
+        f'<tg-emoji emoji-id="5427009714745517609">✅</tg-emoji><i>{html.escape(get_user_display_name(user_id, first_name))}, твой {target_ru} {html.escape(target_label)} успешно добавлен!</i>'
     )
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="« В меню продвижения", callback_data="promote_menu", style="primary")]])
     await message.answer(succ_text, reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
@@ -19864,7 +19981,6 @@ async def process_chat_shared(message: types.Message):
         await message.reply("<i>Сессия добавления задания истекла. Введите /promote заново.</i>", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.HTML)
         return
 
-    # Delete instruction messages
     if "msg_ids" in state_data:
         for mid in state_data["msg_ids"]:
             try:
@@ -19891,7 +20007,6 @@ async def process_chat_shared(message: types.Message):
     chat_title = shared_title or ("Канал" if target_type == "channel" else "Чат")
     chat_username = (shared_username or "").strip().lstrip("@")
 
-    # If title or username was not returned by client, fallback to get_chat
     if not chat_username or not shared_title:
         for cid in candidates:
             try:
@@ -19906,14 +20021,14 @@ async def process_chat_shared(message: types.Message):
             except Exception as e:
                 logging.warning(f"bot.get_chat({cid}) failed: {e}")
 
-    first_name = message.from_user.first_name or "Игрок"
+    first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
     await finalize_p2p_promotion_creation(message, user_id, first_name, state_data, real_chat_id, chat_title, chat_username)
 
 
 @dp.callback_query(lambda c: c.data == "promote_active")
 async def process_promote_active(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
     try:
         cursor.execute("""
@@ -19999,7 +20114,7 @@ async def process_promote_delete(callback: types.CallbackQuery):
 @dp.callback_query(lambda c: c.data == "promote_completed")
 async def process_promote_completed(callback: types.CallbackQuery):
     user_id = callback.from_user.id
-    user_link = get_user_mention(user_id, callback.from_user.first_name)
+    user_link = get_user_mention(user_id, get_user_display_name(callback.from_user.id, callback.from_user.first_name))
 
     try:
         cursor.execute("""
@@ -20062,7 +20177,6 @@ async def process_promote_text_input(message: types.Message):
     if not state_data:
         return
 
-    # If user types a slash command, clear state and let the command execute
     if message.text.startswith("/"):
         promote_user_states.pop(user_id, None)
         return
@@ -20089,7 +20203,6 @@ async def process_promote_text_input(message: types.Message):
             await message.reply(f"<i>Не удалось найти публичный канал/чат @{uname}. Проверьте правильность написания и убедитесь, что канал публичный.</i>", parse_mode=ParseMode.HTML)
             return
 
-        # Delete service messages if present
         if "msg_ids" in state_data:
             for mid in state_data["msg_ids"]:
                 try:
@@ -20098,7 +20211,7 @@ async def process_promote_text_input(message: types.Message):
                     pass
 
         promote_user_states.pop(user_id, None)
-        first_name = message.from_user.first_name or "Игрок"
+        first_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or "Игрок"
         await finalize_p2p_promotion_creation(message, user_id, first_name, state_data, real_chat_id, chat_title, chat_username)
         return
 
@@ -20108,14 +20221,14 @@ async def process_promote_text_input(message: types.Message):
         if raw_val is None or raw_val < 1:
             await message.reply("<i>Минимальная цена — 1 MPOINT! Введите корректное число.</i>", parse_mode=ParseMode.HTML)
             return
-        await handle_promote_price_selected(message.chat.id, user_id, message.from_user.first_name, int(raw_val))
+        await handle_promote_price_selected(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), int(raw_val))
         return
 
     if step == "subs":
         if raw_val is None or raw_val < 1:
             await message.reply("<i>Количество подписчиков должно быть от 1! Введите корректное число.</i>", parse_mode=ParseMode.HTML)
             return
-        await handle_promote_subs_selected(message.chat.id, user_id, message.from_user.first_name, int(raw_val))
+        await handle_promote_subs_selected(message.chat.id, user_id, get_user_display_name(message.from_user.id, message.from_user.first_name), int(raw_val))
         return
 
 
@@ -20156,14 +20269,14 @@ def _resolve_role_target(message, raw_target=None):
     if replied_user:
         return (
             int(replied_user.id),
-            replied_user.first_name or "Пользователь",
+            get_user_display_name(replied_user.id, replied_user.first_name) or "Пользователь",
             replied_user.username,
         )
     return None, "Пользователь", None
 
 
 def _role_user_link(user_id, name, username=None):
-    safe_name = html.escape(name or "Пользователь")
+    safe_name = html.escape(get_user_display_name(user_id, name))
     if username:
         return f'<a href="tg://user?id={user_id}">{safe_name} (@{html.escape(username)})</a>'
     return f'<a href="tg://user?id={user_id}">{safe_name}</a>'
