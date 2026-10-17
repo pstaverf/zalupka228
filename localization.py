@@ -8,6 +8,14 @@ import re
 
 
 LANGUAGES = ("ru", "en", "uk", "kk")
+_LANGUAGE_ALIASES = {
+    "ru": "ru",
+    "en": "en",
+    "uk": "uk",
+    "ua": "uk",
+    "kk": "kk",
+    "kz": "kk",
+}
 _USER = ContextVar("locale_user", default=None)
 _LANGUAGE = ContextVar("locale_language", default=None)
 _language_getter = None
@@ -16,7 +24,66 @@ _PARTS = re.compile(r"(<[^>]*>|\n)")
 _EDGE = re.compile(r"[A-Za-zА-Яа-яЁё0-9{}]")
 _FIELD = re.compile(r"(?<!\{)\{(\d+)\}(?!\})")
 _CATALOG_PATH = Path(__file__).with_name("locales") / "messages.json"
+_INTERFACE_PATH = Path(__file__).with_name("locales") / "interface.json"
 CATALOG = json.loads(_CATALOG_PATH.read_text(encoding="utf-8"))
+INTERFACE = json.loads(_INTERFACE_PATH.read_text(encoding="utf-8"))
+
+
+class UserSettings(dict):
+    def __init__(
+        self,
+        user_id=0,
+        language="ru",
+        bot_nickname=None,
+        hide_top_username=False,
+        demo_balance=None,
+    ):
+        language = language if language in LANGUAGES else "ru"
+        super().__init__(
+            user_id=int(user_id),
+            language=language,
+            bot_nickname=bot_nickname,
+            hide_top_username=bool(hide_top_username),
+            demo_balance=int(demo_balance) if demo_balance is not None else None,
+        )
+
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+    def __setattr__(self, name, value):
+        if name == "language":
+            value = value if value in LANGUAGES else "ru"
+        elif name == "user_id":
+            value = int(value)
+        elif name == "hide_top_username":
+            value = bool(value)
+        elif name == "demo_balance" and value is not None:
+            value = int(value)
+        self[name] = value
+
+    def copy(self):
+        return UserSettings(**self)
+
+    def to_dict(self):
+        return dict(self)
+
+
+def telegram_language(language_code=None, default="en"):
+    if language_code is not None and not isinstance(language_code, str):
+        actor = getattr(language_code, "from_user", None)
+        language_code = getattr(language_code, "language_code", None)
+        if language_code is None and actor is not None:
+            language_code = getattr(actor, "language_code", None)
+    if not isinstance(language_code, str):
+        return default
+    normalized = language_code.strip().lower().replace("_", "-")
+    if not normalized:
+        return default
+    primary = normalized.split("-", 1)[0]
+    return _LANGUAGE_ALIASES.get(primary, "en")
 
 
 def configure(language_getter):
