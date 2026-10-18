@@ -19,6 +19,7 @@ _LANGUAGE_ALIASES = {
 _USER = ContextVar("locale_user", default=None)
 _LANGUAGE = ContextVar("locale_language", default=None)
 _language_getter = None
+_language_ensurer = None
 _CYRILLIC = re.compile(r"[А-Яа-яЁё]")
 _PARTS = re.compile(r"(<[^>]*>|\n)")
 _EDGE = re.compile(r"[A-Za-zА-Яа-яЁё0-9{}]")
@@ -86,9 +87,10 @@ def telegram_language(language_code=None, default="en"):
     return _LANGUAGE_ALIASES.get(primary, "en")
 
 
-def configure(language_getter):
-    global _language_getter
+def configure(language_getter, language_ensurer=None):
+    global _language_getter, _language_ensurer
     _language_getter = language_getter
+    _language_ensurer = language_ensurer
 
 
 def current_language(user_id=None):
@@ -114,21 +116,24 @@ def language_context(language):
 
 def localized(function):
     parameters = tuple(inspect.signature(function).parameters)
-    user_parameter = next((name for name in ("user_id", "admin_id") if name in parameters), None)
+    user_parameter = next((name for name in parameters if name in ("user_id", "admin_id", "owner_id", "buyer_id", "seller_id")), None)
     user_index = parameters.index(user_parameter) if user_parameter else None
-    actor_parameters = tuple((name, parameters.index(name)) for name in ("callback", "message", "event", "message_or_callback", "target") if name in parameters)
+    actor_parameters = tuple((name, parameters.index(name)) for name in ("callback", "message", "event", "message_or_callback", "target", "message_obj") if name in parameters)
     def enter(args, kwargs):
         uid = kwargs.get(user_parameter) if user_parameter else None
         if uid is None and user_index is not None and user_index < len(args):
             uid = args[user_index]
-        if uid is None:
-            for name, index in actor_parameters:
-                event = kwargs.get(name, args[index] if index < len(args) else None)
-                actor = getattr(event, "from_user", None)
-                if actor is not None and getattr(actor, "is_bot", False) is not True:
+        actor_obj = None
+        for name, index in actor_parameters:
+            event = kwargs.get(name, args[index] if index < len(args) else None)
+            actor = getattr(event, "from_user", None)
+            if actor is not None and getattr(actor, "is_bot", False) is not True:
+                actor_obj = actor
+                if uid is None:
                     uid = getattr(actor, "id", None)
-                    if uid is not None:
-                        break
+                break
+        if actor_obj is not None and _language_ensurer is not None:
+            _language_ensurer(actor_obj)
         return _USER.set(int(uid)) if uid is not None else None
     if inspect.iscoroutinefunction(inspect.unwrap(function)):
         @wraps(function)

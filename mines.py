@@ -1327,7 +1327,43 @@ def get_user_language(user_id):
     return get_user_settings(user_id).get("language", "ru")
 
 
-_configure_localization(get_user_language)
+def _ensure_user_language(user):
+    if user is None or getattr(user, "is_bot", False):
+        return
+    lang_code = getattr(user, "language_code", None)
+    if not isinstance(lang_code, str) or not lang_code.strip():
+        return
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return
+    uid = int(uid)
+    if uid in _settings_cache:
+        return
+    try:
+        cursor.execute(
+            "SELECT language, bot_nickname, hide_top_username, demo_balance FROM bot_user_settings WHERE user_id = ?",
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            _cache_put(
+                _settings_cache,
+                uid,
+                UserSettings(
+                    user_id=uid,
+                    language=row[0] if row[0] in LANGUAGE_NAMES else "ru",
+                    bot_nickname=row[1],
+                    hide_top_username=bool(row[2]),
+                    demo_balance=int(row[3]) if row[3] is not None else None,
+                ),
+            )
+            return
+    except sqlite3.Error:
+        return
+    set_user_settings(uid, language=_telegram_language(lang_code))
+
+
+_configure_localization(get_user_language, _ensure_user_language)
 
 
 def tr(user_id, key, **kwargs):
@@ -2650,10 +2686,13 @@ def is_bot_command(text, chat_type="private"):
     first = parts[0]
     
     command_triggers = [
-        "мины", "м", "башня", "бш", "квак", "qwak", "frog", "лягушка", "игры", "игра", "баланс", "б", "бал",
-        "бонус", "топ", "дать", "пер", "раздача", "роздача", "giveaway", "transfer",
-        "история", "недавние", "алмазы", "алмаз", "diamond",
-        "золото", "gold", "голд", "з",
+        "мины", "mines", "м", "башня", "tower", "бш", "квак", "qwak", "frog", "лягушка",
+        "игры", "игра", "games", "game", "catalog", "каталог", "ігри", "гра", "ойындар", "ойын",
+        "баланс", "б", "бал", "balance", "bal", "b", "теңгерім",
+        "бонус", "bonus", "топ", "top", "дать", "пер", "раздача", "роздача", "giveaway", "transfer",
+        "история", "недавние", "history", "історія", "тарих",
+        "алмазы", "алмаз", "diamond", "diamonds",
+        "золото", "gold", "голд", "з", "21", "очко", "ochko", "twentyone",
         "краш", "crash", "кр",
         "слоты", "слот", "slots", "slot",
         "боулинг", "bowling", "бо",
@@ -2669,55 +2708,30 @@ def is_bot_command(text, chat_type="private"):
         "футбол", "football", "фб",
         "промо", "promo",
         "гет", "get",
-        "поинт", "поинты", "point", "points", "send", "перевод",
-        "рекорды", "рекорд", "records",
-        "депозит", "депозиты", "деп", "банк", "deposit",
+        "поинт", "поинты", "point", "points", "mp", "мп", "send", "перевод",
+        "рекорды", "рекорд", "records", "record", "рекорди", "рекордтар",
+        "депозит", "депозиты", "деп", "банк", "deposit", "deposits", "dep", "bank", "депозити",
+        "обменник", "exchange", "обмінник", "айырбастау",
+        "заработать", "заработок", "earning", "earn", "заробити", "заробіток", "табыс",
+        "продвижение", "promote", "просування", "ілгерілету",
+        "храм", "temple",
+        "настройки", "settings", "налаштування", "баптаулар",
+        "язык", "language", "lang", "мова", "тіл",
         "реф", "рефералы", "реферал", "ref", "referral"
     ]
     
     if first in command_triggers:
         return True
         
-    if text in ["топ чата", "топ ч", "топ чат", "история игр", "недавние игры", "топ рекорды", "топ рекордов", "топ рекорд"]:
+    if text in [
+        "топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы", "top chat", "chat top", "топ чату", "чат тобы",
+        "топ игроков", "мировой топ", "top players", "world top", "топ гравців", "світовий топ", "ойыншылар тобы", "әлемдік топ",
+        "история игр", "недавние игры", "игры история", "recent games", "game history", "історія ігор", "ойындар тарихы",
+        "топ рекорды", "топ рекордов", "топ рекорд", "top records"
+    ]:
         return True
         
     return False
-
-
-def _ensure_user_language(user):
-    if user is None or getattr(user, "is_bot", False):
-        return
-    lang_code = getattr(user, "language_code", None)
-    if not isinstance(lang_code, str) or not lang_code.strip():
-        return
-    uid = getattr(user, "id", None)
-    if uid is None:
-        return
-    uid = int(uid)
-    if uid in _settings_cache:
-        return
-    try:
-        cursor.execute(
-            "SELECT language, bot_nickname, hide_top_username, demo_balance FROM bot_user_settings WHERE user_id = ?",
-            (uid,),
-        )
-        row = cursor.fetchone()
-        if row:
-            _cache_put(
-                _settings_cache,
-                uid,
-                UserSettings(
-                    user_id=uid,
-                    language=row[0] if row[0] in LANGUAGE_NAMES else "ru",
-                    bot_nickname=row[1],
-                    hide_top_username=bool(row[2]),
-                    demo_balance=int(row[3]) if row[3] is not None else None,
-                ),
-            )
-            return
-    except sqlite3.Error:
-        return
-    set_user_settings(uid, language=_telegram_language(lang_code))
 
 
 @dp.message.outer_middleware()
@@ -2901,9 +2915,9 @@ def resolve_bet_amount(text, balance=0):
     if not text:
         return None
     t = text.lower().strip()
-    if t in ["все", "всё", "all", "allin", "вб", "ва-банк", "вабанк", "ва банк"]:
+    if t in ["все", "всё", "all", "allin", "вб", "ва-банк", "вабанк", "ва банк", "усе", "всі", "барлығы", "бәрі"]:
         return balance
-    if t in ["пол", "половина", "half", "1/2"]:
+    if t in ["пол", "половина", "half", "1/2", "пів", "половину", "жарты", "жартысы"]:
         return balance // 2
     return parse_amount(text)
 
@@ -3904,8 +3918,8 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
             )
 
 
-@dp.message(Command("history", "история"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"]))
+@dp.message(Command("history", "история", "історія", "тарих"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["история", "недавние игры", "игры история", "история игр", "history", "recent games", "game history", "історія", "історія ігор", "тарих", "ойындар тарихы"]))
 @_localized
 async def cmd_history(message: types.Message):
     await show_recent_games_menu(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), page=1)
@@ -5432,15 +5446,15 @@ async def cmd_i(message: types.Message):
     await message.delete()
 
 
-@dp.message(Command("top"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ", "топ игроков", "мировой топ"]))
+@dp.message(Command("top", "топ"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["топ", "топ игроков", "мировой топ", "top", "top players", "world top", "топ гравців", "світовий топ", "ойыншылар тобы", "әлемдік топ"]))
 @_localized
 async def cmd_top(message: types.Message):
     await show_top(message)
 
 
 @dp.message(Command("top_chat", "topchat"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы"]))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы", "top chat", "chat top", "топ чату", "чат тобы"]))
 @_localized
 async def cmd_top_chat(message: types.Message):
     if message.chat.type not in ["group", "supergroup"]:
@@ -5512,17 +5526,18 @@ async def show_records(message: types.Message):
     )
 
 
-@dp.message(Command("records", "record", "рекорды", "рекорд"))
+@dp.message(Command("records", "record", "рекорды", "рекорд", "рекорди", "рекордтар"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower().strip() in [
-    "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top"
+    "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top",
+    "record", "top records", "рекорди", "рекордтар", "/рекорди", "/рекордтар"
 ]))
 @_localized
 async def cmd_records(message: types.Message):
     await show_records(message)
 
 
-@dp.message(Command("game", "games"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"]))
+@dp.message(Command("game", "games", "игры", "игра", "ігри", "гра", "ойындар", "ойын"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["игры", "игра", "каталог", "games", "game", "catalog", "ігри", "гра", "ойындар", "ойын"]))
 @_localized
 async def cmd_game(message: types.Message):
     is_group = message.chat.type in ["group", "supergroup"]
@@ -8675,7 +8690,8 @@ async def cmd_promo(message: types.Message):
 
 
 
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"]))
+@dp.message(Command("balance", "bal", "баланс", "бал", "теңгерім"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["б", "баланс", "бал", "b", "bal", "balance", "теңгерім"]))
 @_localized
 async def cmd_balance(message: types.Message):
     user_id = message.from_user.id
@@ -8709,7 +8725,7 @@ async def cmd_balance(message: types.Message):
         )
 
 
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() == "бонус" and message.chat.type in ["group", "supergroup"]))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("бонус", "bonus", "/bonus", "/бонус") and message.chat.type in ["group", "supergroup"]))
 @_localized
 async def cmd_bonus(message: types.Message):
     user_id = message.from_user.id
@@ -14586,8 +14602,8 @@ async def _show_settings(target, user_id, edit=False):
         await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
-@dp.message(Command("language", "lang", "язык"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ("/language", "/lang", "/язык", "язык", "language")))
+@dp.message(Command("language", "lang", "язык", "мова", "тіл"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ("/language", "/lang", "/язык", "язык", "language", "lang", "/мова", "мова", "/тіл", "тіл")))
 @_localized
 async def cmd_language(message: types.Message):
     user_id = int(message.from_user.id)
@@ -14604,8 +14620,8 @@ async def cmd_language(message: types.Message):
     )
 
 
-@dp.message(Command("settings", "настройки"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings")))
+@dp.message(Command("settings", "настройки", "налаштування", "баптаулар"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings", "settings", "налаштування", "/налаштування", "баптаулар", "/баптаулар")))
 @_localized
 async def cmd_settings(message: types.Message):
     if message.chat.type != "private":
@@ -15830,8 +15846,8 @@ def build_deposit_main_menu(user_id, user_name):
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.message(Command("deposit", "депозит", "банк", "депозиты"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"]))
+@dp.message(Command("deposit", "депозит", "банк", "депозиты", "bank", "депозити"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк", "deposit", "deposits", "dep", "bank", "/bank", "депозити", "/депозити"]))
 @_localized
 async def cmd_deposit(message: types.Message):
     user_id = message.from_user.id
@@ -17259,8 +17275,8 @@ def render_sexchange_menu():
 
 
 
-@dp.message(Command("exchange", "обменник"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"]))
+@dp.message(Command("exchange", "обменник", "обмінник", "айырбастау"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник", "обмінник", "/обмінник", "айырбастау", "/айырбастау"]))
 @_localized
 async def cmd_exchange(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
@@ -19677,8 +19693,8 @@ def build_earn_menu(user_id) -> (str, InlineKeyboardMarkup):
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.message(Command("earning", "earn", "заработать", "заработок"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn"]))
+@dp.message(Command("earning", "earn", "заработать", "заработок", "заробити", "заробіток", "табыс"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn", "заробити", "заробіток", "табыс", "/заробити", "/табыс"]))
 @_localized
 async def cmd_earning(message: types.Message):
     user_id = message.from_user.id
@@ -19750,8 +19766,8 @@ async def process_earn_check(callback: types.CallbackQuery):
     await callback.answer(_lf('Задание выполнено! +{0} MP', (_fmt(format_number(task['reward']), '', -1),)), show_alert=True)
 
 
-@dp.message(Command("promote", "продвижение"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение"]))
+@dp.message(Command("promote", "продвижение", "просування", "ілгерілету"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение", "просування", "/просування", "ілгерілету", "/ілгерілету"]))
 @_localized
 async def cmd_promote(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
