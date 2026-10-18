@@ -2684,10 +2684,47 @@ def is_bot_command(text, chat_type="private"):
     return False
 
 
+def _ensure_user_language(user):
+    if user is None or getattr(user, "is_bot", False):
+        return
+    lang_code = getattr(user, "language_code", None)
+    if not isinstance(lang_code, str) or not lang_code.strip():
+        return
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return
+    uid = int(uid)
+    if uid in _settings_cache:
+        return
+    try:
+        cursor.execute(
+            "SELECT language, bot_nickname, hide_top_username, demo_balance FROM bot_user_settings WHERE user_id = ?",
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            _cache_put(
+                _settings_cache,
+                uid,
+                UserSettings(
+                    user_id=uid,
+                    language=row[0] if row[0] in LANGUAGE_NAMES else "ru",
+                    bot_nickname=row[1],
+                    hide_top_username=bool(row[2]),
+                    demo_balance=int(row[3]) if row[3] is not None else None,
+                ),
+            )
+            return
+    except sqlite3.Error:
+        return
+    set_user_settings(uid, language=_telegram_language(lang_code))
+
+
 @dp.message.outer_middleware()
 @_localized
 async def save_username_middleware(handler, event, data):
     if event.from_user:
+        _ensure_user_language(event.from_user)
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
         if event.chat and event.chat.type in ["group", "supergroup"]:
             add_chat_member(event.from_user.id, event.chat.id)
@@ -2716,6 +2753,7 @@ async def save_username_middleware(handler, event, data):
 @_localized
 async def save_username_cb_middleware(handler, event, data):
     if event.from_user:
+        _ensure_user_language(event.from_user)
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
         if event.message and event.message.chat and event.message.chat.type in ["group", "supergroup"]:
             add_chat_member(event.from_user.id, event.message.chat.id)
