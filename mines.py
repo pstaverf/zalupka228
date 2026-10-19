@@ -152,6 +152,24 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
 
+@bot.session.middleware
+async def _telegram_api_middleware(make_request, bot_instance, method):
+    for attempt in range(2):
+        try:
+            return await make_request(bot_instance, method)
+        except TelegramRetryAfter as exc:
+            if getattr(method, "chat_id", None) == ADMIN_LOG_CHAT_ID:
+                raise
+            if attempt == 0:
+                await asyncio.sleep(max(0.1, float(getattr(exc, "retry_after", 1) or 1)))
+                continue
+            return None
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return None
+            raise
+
+
 def _inline_filter(predicate):
     async def evaluate(event):
         return predicate(event)
@@ -14490,7 +14508,11 @@ async def _send_demo_status(target, user_id, edit=False):
         f"{tr(user_id, 'demo_description')}"
     )
     if edit:
-        await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
+        try:
+            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
     else:
         await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
 
