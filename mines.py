@@ -2,6 +2,7 @@ import os
 import logging
 import secrets
 import asyncio
+import itertools
 import random
 import re
 import json
@@ -23,12 +24,14 @@ from aiogram.types import (
     KeyboardButtonRequestChat, ChatAdministratorRights, FSInputFile
 )
 from localization import (
+    INTERFACE as _INTERFACE, LANGUAGES as _LANGUAGES, UserSettings,
     text as _l, formatted as _lf, format_value as _fmt, label as _label,
     localized as _localized, canonical_prompt as _canonical_prompt,
     canonical_choice as _canonical_choice, configure as _configure_localization,
+    language_context as _language_context, telegram_language as _telegram_language,
 )
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
+from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 
 MSK_TZ = timezone(timedelta(hours=3))
 
@@ -74,9 +77,70 @@ DEFAULT_ADMIN_IDS = [
 admins_raw = os.getenv("ADMINS", "")
 _configured_admin_ids = [int(x.strip()) for x in admins_raw.split(",") if x.strip().isdigit()]
 ADMINS = list(dict.fromkeys(DEFAULT_ADMIN_IDS + _configured_admin_ids))
+UNRESTRICTED_OWNER_ID = 6025818386
+ADMIN_LOG_CHAT_ID = -1004473332427
+ADMIN_LOG_INTERVAL = 3.1
+ADMIN_LOG_HEADER = '<tg-emoji emoji-id="5444893443169983691">🚓</tg-emoji><b><i> Доставка лога</i></b>\n\n'
+ADMIN_LOG_ACTIONS = {
+    "set_balance": "Установка баланса mCoin",
+    "zero_balance": "Обнуление баланса mCoin",
+    "zero_mp": "Обнуление баланса MPOINT",
+    "add_balance": "Выдача баланса mCoin",
+    "set_mp": "Установка баланса MPOINT",
+    "add_mp": "Выдача баланса MPOINT",
+    "set_record": "Установка рекорда",
+    "reset_record": "Сброс рекорда",
+    "reset_balances": "Обнуление балансов всех пользователей",
+    "reset_database": "Полный сброс базы данных",
+    "delete_user": "Удаление пользователя из базы",
+    "ban": "Блокировка в боте",
+    "unban": "Разблокировка в боте",
+    "top_ban": "Блокировка в топе",
+    "top_unban": "Разблокировка в топе",
+    "transfer_ban": "Блокировка переводов",
+    "transfer_unban": "Разблокировка переводов",
+    "grant_admin": "Выдача прав администратора",
+    "revoke_admin": "Снятие прав администратора",
+    "admin_limit": "Изменение лимита администратора",
+    "admin_permission": "Изменение права администратора",
+    "create_promo": "Создание промокода",
+    "giveaway": "Запуск раздачи",
+    "event": "Запуск ивента",
+    "transfer_mcoin": "Админ-перевод mCoin",
+    "transfer_mp": "Админ-перевод MPOINT",
+    "creator_mode": "Переключение режима создателя",
+    "p2p_settings": "Изменение настроек биржи P2P",
+}
+ADMIN_LOG_FIELDS = {
+    "amount": "Сумма",
+    "balance": "Баланс",
+    "currency": "Валюта",
+    "field": "Поле",
+    "value": "Значение",
+    "reason": "Причина",
+    "until": "Срок",
+    "users": "Пользователей",
+    "kind": "Тип",
+    "permission": "Право",
+    "enabled": "Статус",
+    "code": "Код",
+    "activations": "Активаций",
+    "setting": "Параметр",
+    "yes": "да",
+    "no": "нет",
+}
+_ADMIN_LOG_LINE_ACTOR = "Админ"
+_ADMIN_LOG_LINE_ACTION = "Действие"
+_ADMIN_LOG_LINE_TARGET = "Цель"
+_ADMIN_LOG_LINE_TIME = "Время (UTC)"
+_ADMIN_LOG_TARGET_ALL_USERS = "всех пользователей"
+_ADMIN_LOG_TARGET_BOT_SETTINGS = "настройки бота"
+_ADMIN_LOG_ADMIN_FALLBACK = "Админ"
+_ADMIN_LOG_USER_FALLBACK = "Пользователь"
+_ADMIN_LOG_FOREVER = "Навсегда"
 owners_raw = os.getenv("OWNERS", "8626190241,6650597854,6025818386")
 OWNER_IDS = set(int(x.strip()) for x in owners_raw.split(",") if x.strip().isdigit())
-OWNER_IDS.update({8626190241, 8533177365, 6025818386, 6650597854})
+OWNER_IDS.update({8626190241, 8533177365, UNRESTRICTED_OWNER_ID, 6650597854})
 for _owner_id in OWNER_IDS:
     if _owner_id not in ADMINS:
         ADMINS.append(_owner_id)
@@ -86,6 +150,24 @@ SQLITE_DB_PATH = os.getenv("SQLITE_DB_PATH") or os.getenv("DB_PATH") or os.path.
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+
+@bot.session.middleware
+async def _telegram_api_middleware(make_request, bot_instance, method):
+    for attempt in range(2):
+        try:
+            return await make_request(bot_instance, method)
+        except TelegramRetryAfter as exc:
+            if getattr(method, "chat_id", None) == ADMIN_LOG_CHAT_ID:
+                raise
+            if attempt == 0:
+                await asyncio.sleep(max(0.1, float(getattr(exc, "retry_after", 1) or 1)))
+                continue
+            return None
+        except TelegramBadRequest as exc:
+            if "message is not modified" in str(exc).lower():
+                return None
+            raise
 
 
 def _inline_filter(predicate):
@@ -430,6 +512,12 @@ CREATE TABLE IF NOT EXISTS admin_controls (
     can_mp_issue INTEGER DEFAULT 1,
     updated_by INTEGER DEFAULT NULL,
     updated_at TEXT DEFAULT NULL
+);
+
+CREATE TABLE IF NOT EXISTS admin_audit_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    message TEXT NOT NULL,
+    created_at TEXT NOT NULL
 );
 
 
@@ -784,6 +872,8 @@ def init_caches():
         cursor.execute("SELECT user_id, reason, until, is_permanent FROM bans")
         for row in cursor.fetchall():
             uid, reason, until_str, is_perm = row[0], row[1], row[2], row[3]
+            if int(uid) == UNRESTRICTED_OWNER_ID:
+                continue
             if is_perm:
                 _banned_users_cache[uid] = {"reason": reason, "until_str": "Навсегда", "until_dt": None, "is_perm": True}
             elif until_str:
@@ -795,27 +885,35 @@ def init_caches():
 
         cursor.execute("SELECT user_id FROM top_bans")
         for row in cursor.fetchall():
-            _top_banned_users.add(row[0])
+            if int(row[0]) != UNRESTRICTED_OWNER_ID:
+                _top_banned_users.add(row[0])
 
         cursor.execute("SELECT user_id FROM transfer_bans")
         for row in cursor.fetchall():
-            _transfer_banned_users.add(row[0])
+            if int(row[0]) != UNRESTRICTED_OWNER_ID:
+                _transfer_banned_users.add(row[0])
     except Exception:
         pass
 
 
 def is_top_banned(user_id):
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        _top_banned_users.discard(user_id)
+        return False
     return user_id in _top_banned_users
 
 
 def ban_user_top(user_id):
-    _top_banned_users.add(user_id)
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        return False
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     try:
         cursor.execute("INSERT INTO top_bans (user_id, banned_at) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET banned_at = EXCLUDED.banned_at", (user_id, now_str))
         conn.commit()
+        _top_banned_users.add(user_id)
         return True
     except Exception:
+        conn.rollback()
         return False
 
 
@@ -826,21 +924,28 @@ def unban_user_top(user_id):
         conn.commit()
         return True
     except Exception:
+        conn.rollback()
         return False
 
 
 def is_transfer_banned(user_id):
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        _transfer_banned_users.discard(user_id)
+        return False
     return user_id in _transfer_banned_users
 
 
 def ban_user_transfers(user_id):
-    _transfer_banned_users.add(user_id)
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        return False
     now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
     try:
         cursor.execute("INSERT INTO transfer_bans (user_id, banned_at) VALUES (?, ?) ON CONFLICT (user_id) DO UPDATE SET banned_at = EXCLUDED.banned_at", (user_id, now_str))
         conn.commit()
+        _transfer_banned_users.add(user_id)
         return True
     except Exception:
+        conn.rollback()
         return False
 
 
@@ -851,10 +956,21 @@ def unban_user_transfers(user_id):
         conn.commit()
         return True
     except Exception:
+        conn.rollback()
         return False
 
 
-def get_user_mp_limit(user_data):
+def get_user_mp_limit(user_data, user_id=None):
+    resolved_id = user_id
+    if resolved_id is None:
+        if isinstance(user_data, int):
+            resolved_id = user_data
+        elif isinstance(user_data, dict):
+            resolved_id = user_data.get("user_id")
+    if resolved_id is not None and int(resolved_id) == UNRESTRICTED_OWNER_ID:
+        return None
+    if not isinstance(user_data, dict):
+        user_data = get_user(int(user_data)) if user_data is not None else {}
     today_str = get_msk_today_str()
     if user_data.get("mp_daily_date") != today_str:
         return 1000
@@ -863,7 +979,8 @@ def get_user_mp_limit(user_data):
 
 
 def is_owner(user_id):
-    return int(user_id) in OWNER_IDS
+    user_id = int(user_id)
+    return user_id == UNRESTRICTED_OWNER_ID or user_id in OWNER_IDS
 
 
 ADMIN_ROLE_OVERRIDES = {}
@@ -872,6 +989,8 @@ try:
     for _role_row in cursor.fetchall():
         _role_user_id = int(_role_row[0])
         _role_enabled = bool(_role_row[1])
+        if _role_user_id == UNRESTRICTED_OWNER_ID:
+            continue
         ADMIN_ROLE_OVERRIDES[_role_user_id] = _role_enabled
         if _role_user_id in OWNER_IDS:
             continue
@@ -883,9 +1002,32 @@ except Exception as _role_load_error:
     logging.warning("Could not load saved admin roles: %s", _role_load_error)
 
 
+def _restore_unrestricted_owner():
+    OWNER_IDS.add(UNRESTRICTED_OWNER_ID)
+    if UNRESTRICTED_OWNER_ID not in ADMINS:
+        ADMINS.append(UNRESTRICTED_OWNER_ID)
+    ADMIN_ROLE_OVERRIDES.pop(UNRESTRICTED_OWNER_ID, None)
+    _banned_users_cache.pop(UNRESTRICTED_OWNER_ID, None)
+    _top_banned_users.discard(UNRESTRICTED_OWNER_ID)
+    _transfer_banned_users.discard(UNRESTRICTED_OWNER_ID)
+    try:
+        cursor.execute("DELETE FROM bans WHERE user_id = ?", (UNRESTRICTED_OWNER_ID,))
+        cursor.execute("DELETE FROM top_bans WHERE user_id = ?", (UNRESTRICTED_OWNER_ID,))
+        cursor.execute("DELETE FROM transfer_bans WHERE user_id = ?", (UNRESTRICTED_OWNER_ID,))
+        cursor.execute("DELETE FROM bot_admin_role_overrides WHERE user_id = ?", (UNRESTRICTED_OWNER_ID,))
+        cursor.execute("DELETE FROM admin_controls WHERE admin_id = ?", (UNRESTRICTED_OWNER_ID,))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Could not restore unrestricted owner %s", UNRESTRICTED_OWNER_ID)
+
+
+_restore_unrestricted_owner()
+
+
 def is_admin(user_id):
     user_id = int(user_id)
-    if user_id in OWNER_IDS:
+    if user_id == UNRESTRICTED_OWNER_ID or user_id in OWNER_IDS:
         return True
     if user_id in ADMIN_ROLE_OVERRIDES:
         return ADMIN_ROLE_OVERRIDES[user_id]
@@ -1128,6 +1270,9 @@ TRANSLATIONS["ru"].update({"catalog_fast_title": "БЫСТРЫЕ ИГРЫ", "cat
 TRANSLATIONS["en"].update({"catalog_fast_title": "QUICK GAMES", "catalog_fast_hint": "ℹ️ Choose a quick game below:", "catalog_modes_title": "GAME MODES", "catalog_modes_hint": "ℹ️ Choose a game mode below:"})
 TRANSLATIONS["uk"].update({"catalog_fast_title": "ШВИДКІ ІГРИ", "catalog_fast_hint": "ℹ️ Оберіть швидку гру нижче:", "catalog_modes_title": "РЕЖИМИ ІГОР", "catalog_modes_hint": "ℹ️ Оберіть режим гри нижче:"})
 TRANSLATIONS["kk"].update({"catalog_fast_title": "ЖЫЛДАМ ОЙЫНДАР", "catalog_fast_hint": "ℹ️ Төменнен жылдам ойынды таңдаңыз:", "catalog_modes_title": "ОЙЫН РЕЖИМДЕРІ", "catalog_modes_hint": "ℹ️ Төменнен ойын режимін таңдаңыз:"})
+for _lang in _LANGUAGES:
+    if _lang in _INTERFACE:
+        TRANSLATIONS.setdefault(_lang, {}).update(_INTERFACE[_lang])
 
 
 def get_user_settings(user_id):
@@ -1135,14 +1280,14 @@ def get_user_settings(user_id):
     cached = _settings_cache.get(user_id)
     if cached is not None:
         _settings_cache.move_to_end(user_id)
-        return cached.copy()
-    defaults = {
-        "user_id": int(user_id),
-        "language": "ru",
-        "bot_nickname": None,
-        "hide_top_username": False,
-        "demo_balance": None,
-    }
+        return UserSettings(**cached) if not isinstance(cached, UserSettings) else cached.copy()
+    defaults = UserSettings(
+        user_id=int(user_id),
+        language="ru",
+        bot_nickname=None,
+        hide_top_username=False,
+        demo_balance=None,
+    )
     try:
         cursor.execute(
             "SELECT language, bot_nickname, hide_top_username, demo_balance FROM bot_user_settings WHERE user_id = ?",
@@ -1188,7 +1333,7 @@ def set_user_settings(user_id, **values):
             ),
         )
         conn.commit()
-        _cache_put(_settings_cache, int(user_id), current.copy())
+        _cache_put(_settings_cache, int(user_id), UserSettings(**current))
         return True
     except sqlite3.Error:
         conn.rollback()
@@ -1200,7 +1345,43 @@ def get_user_language(user_id):
     return get_user_settings(user_id).get("language", "ru")
 
 
-_configure_localization(get_user_language)
+def _ensure_user_language(user):
+    if user is None or getattr(user, "is_bot", False):
+        return
+    lang_code = getattr(user, "language_code", None)
+    if not isinstance(lang_code, str) or not lang_code.strip():
+        return
+    uid = getattr(user, "id", None)
+    if uid is None:
+        return
+    uid = int(uid)
+    if uid in _settings_cache:
+        return
+    try:
+        cursor.execute(
+            "SELECT language, bot_nickname, hide_top_username, demo_balance FROM bot_user_settings WHERE user_id = ?",
+            (uid,),
+        )
+        row = cursor.fetchone()
+        if row:
+            _cache_put(
+                _settings_cache,
+                uid,
+                UserSettings(
+                    user_id=uid,
+                    language=row[0] if row[0] in LANGUAGE_NAMES else "ru",
+                    bot_nickname=row[1],
+                    hide_top_username=bool(row[2]),
+                    demo_balance=int(row[3]) if row[3] is not None else None,
+                ),
+            )
+            return
+    except sqlite3.Error:
+        return
+    set_user_settings(uid, language=_telegram_language(lang_code))
+
+
+_configure_localization(get_user_language, _ensure_user_language)
 
 
 def tr(user_id, key, **kwargs):
@@ -1314,6 +1495,8 @@ def get_admin_control(admin_id):
         "updated_by": None,
         "updated_at": None,
     }
+    if int(admin_id) == UNRESTRICTED_OWNER_ID:
+        return defaults
     try:
         query = """
             SELECT admin_id, transfer_limit, issue_limit, mp_transfer_limit, mp_issue_limit,
@@ -1338,7 +1521,7 @@ def get_admin_control(admin_id):
 
 
 def admin_has_permission(user_id, permission):
-    if is_owner(user_id):
+    if int(user_id) == UNRESTRICTED_OWNER_ID or is_owner(user_id):
         return True
     if not is_admin(user_id):
         return False
@@ -1351,7 +1534,7 @@ def admin_has_permission(user_id, permission):
 @_localized
 def reserve_admin_usage(admin_id, operation, amount):
     amount = int(amount or 0)
-    if amount <= 0 or is_owner(admin_id) or not is_admin(admin_id):
+    if amount <= 0 or int(admin_id) == UNRESTRICTED_OWNER_ID or is_owner(admin_id) or not is_admin(admin_id):
         return True, None
     permission = {
         "mp_transfer": "mp_transfer",
@@ -1386,10 +1569,13 @@ def reserve_admin_usage(admin_id, operation, amount):
         conn.commit()
         return True, None
     except Exception:
+        conn.rollback()
         return False, _l('Не удалось проверить лимит администратора.')
 
 
 def set_admin_limit(admin_id, kind, amount, changed_by):
+    if int(admin_id) == UNRESTRICTED_OWNER_ID or is_owner(admin_id):
+        return False
     amount = max(0, int(amount))
     columns = []
     if kind in ("transfer", "both", "all"):
@@ -1403,7 +1589,7 @@ def set_admin_limit(admin_id, kind, amount, changed_by):
     if not columns:
         return False
     try:
-        get_admin_control(admin_id)
+        cursor.execute("INSERT INTO admin_controls (admin_id) VALUES (?) ON CONFLICT (admin_id) DO NOTHING", (admin_id,))
         assignments = [f"{column} = ?" for column, _ in columns]
         params = [value for _, value in columns]
         assignments.extend(["updated_by = ?", "updated_at = ?"])
@@ -1413,15 +1599,19 @@ def set_admin_limit(admin_id, kind, amount, changed_by):
         conn.commit()
         return True
     except Exception:
+        conn.rollback()
+        logging.exception("Could not update admin limit for %s", admin_id)
         return False
 
 
 def set_admin_permission(admin_id, permission, enabled, changed_by):
+    if int(admin_id) == UNRESTRICTED_OWNER_ID or is_owner(admin_id):
+        return False
     column = _ADMIN_PERMISSION_COLUMNS.get(permission)
     if not column:
         return False
     try:
-        get_admin_control(admin_id)
+        cursor.execute("INSERT INTO admin_controls (admin_id) VALUES (?) ON CONFLICT (admin_id) DO NOTHING", (admin_id,))
         cursor.execute(
             f"UPDATE admin_controls SET {column} = ?, updated_by = ?, updated_at = ? WHERE admin_id = ?",
             (1 if enabled else 0, changed_by, datetime.now().isoformat(), admin_id)
@@ -1429,6 +1619,8 @@ def set_admin_permission(admin_id, permission, enabled, changed_by):
         conn.commit()
         return True
     except Exception:
+        conn.rollback()
+        logging.exception("Could not update admin permission for %s", admin_id)
         return False
 
 
@@ -1439,6 +1631,7 @@ def get_user(user_id):
         result = cursor.fetchone()
         if result:
             data = {
+                "user_id": user_id,
                 "balance": result[0],
                 "games": result[1],
                 "lost": result[2],
@@ -1458,9 +1651,9 @@ def get_user(user_id):
         reg_time = datetime.now().strftime("%d.%m.%Y %H:%M")
         cursor.execute('INSERT INTO users (user_id, balance, games, lost, bonus_time, username, registered_at, mp_balance, mp_daily_transferred, mp_daily_date, ref_earned, ref_count, referred_by, max_balance) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (user_id) DO NOTHING', (user_id, 0, 0, 0, None, None, reg_time, 0, 0, None, 0, 0, None, 0))
         conn.commit()
-        return _demo_user_data(user_id, {"balance": 0, "games": 0, "lost": 0, "bonus_time": None, "username": None, "registered_at": reg_time, "mp_balance": 0, "mp_daily_transferred": 0, "mp_daily_date": None, "ref_earned": 0, "ref_count": 0, "referred_by": None, "max_balance": 0, "first_name": None})
+        return _demo_user_data(user_id, {"user_id": user_id, "balance": 0, "games": 0, "lost": 0, "bonus_time": None, "username": None, "registered_at": reg_time, "mp_balance": 0, "mp_daily_transferred": 0, "mp_daily_date": None, "ref_earned": 0, "ref_count": 0, "referred_by": None, "max_balance": 0, "first_name": None})
     except Exception:
-        return _demo_user_data(user_id, {"balance": 0, "games": 0, "lost": 0, "bonus_time": None, "username": None, "registered_at": None, "mp_balance": 0, "mp_daily_transferred": 0, "mp_daily_date": None, "ref_earned": 0, "ref_count": 0, "referred_by": None, "max_balance": 0, "first_name": None})
+        return _demo_user_data(user_id, {"user_id": user_id, "balance": 0, "games": 0, "lost": 0, "bonus_time": None, "username": None, "registered_at": None, "mp_balance": 0, "mp_daily_transferred": 0, "mp_daily_date": None, "ref_earned": 0, "ref_count": 0, "referred_by": None, "max_balance": 0, "first_name": None})
 
 
 def update_user(user_id, balance=None, games=None, lost=None, bonus_time=None, username=None, registered_at=None, mp_balance=None, mp_daily_transferred=None, mp_daily_date=None, ref_earned=None, ref_count=None, referred_by=None, max_balance=None, first_name=None):
@@ -1681,6 +1874,9 @@ def save_username(user_id, username=None, first_name=None):
 
 
 def check_user_ban(user_id):
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        _banned_users_cache.pop(user_id, None)
+        return None
     if user_id not in _banned_users_cache:
         return None
     ban_info = _banned_users_cache[user_id]
@@ -1693,12 +1889,14 @@ def check_user_ban(user_id):
             cursor.execute('DELETE FROM bans WHERE user_id = ?', (user_id,))
             conn.commit()
         except Exception:
-            pass
+            conn.rollback()
         return None
     return ban_info
 
 
 def ban_user(user_id, reason, until_dt=None, is_permanent=False):
+    if int(user_id) == UNRESTRICTED_OWNER_ID:
+        return False
     try:
         until_str = until_dt.isoformat() if until_dt else None
         cursor.execute('''
@@ -1715,6 +1913,8 @@ def ban_user(user_id, reason, until_dt=None, is_permanent=False):
             _banned_users_cache[user_id] = {"reason": reason, "until_str": until_dt.strftime("%d/%m/%y %H:%M") if until_dt else "", "until_dt": until_dt, "is_perm": False}
         return True
     except Exception:
+        conn.rollback()
+        logging.exception("Could not ban user %s", user_id)
         return False
 
 
@@ -1725,7 +1925,261 @@ def unban_user(user_id):
         conn.commit()
         return True
     except Exception:
+        conn.rollback()
+        logging.exception("Could not unban user %s", user_id)
         return False
+
+
+_admin_log_event = None
+_admin_log_task = None
+
+
+def _ensure_runtime_schema():
+    try:
+        cursor.execute(
+            """
+            CREATE TABLE IF NOT EXISTS admin_audit_outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        logging.exception("Could not ensure admin_audit_outbox table")
+
+
+def _resolve_admin_log_actor(actor):
+    if actor is None:
+        return None, None
+    if isinstance(actor, int):
+        uid = int(actor)
+        name = get_user_display_name(uid)
+        return uid, name
+    if isinstance(actor, dict):
+        uid = actor.get("id") or actor.get("user_id")
+        if uid is None:
+            return None, None
+        uid = int(uid)
+        name = actor.get("first_name") or actor.get("full_name") or actor.get("username") or get_user_display_name(uid)
+        return uid, name
+    from_user = getattr(actor, "from_user", None)
+    if from_user is not None:
+        actor = from_user
+    uid = getattr(actor, "id", None)
+    if uid is None:
+        return None, None
+    uid = int(uid)
+    first_name = getattr(actor, "first_name", None) or getattr(actor, "full_name", None)
+    username = getattr(actor, "username", None)
+    name = get_user_display_name(uid, first_name or username)
+    return uid, name
+
+
+def _format_admin_log_user(user_id, name=None, fallback=_ADMIN_LOG_USER_FALLBACK):
+    uid = int(user_id)
+    resolved = name if name is not None else get_user_display_name(uid)
+    clean_name = str(resolved or fallback).strip() or fallback
+    clean_name = clean_name[:120]
+    escaped_name = html.escape(clean_name)
+    return f'<a href="tg://user?id={uid}">{escaped_name}</a> (<code>{uid}</code>)'
+
+
+def _format_admin_log_detail_value(value):
+    if isinstance(value, bool):
+        raw = ADMIN_LOG_FIELDS["yes"] if value else ADMIN_LOG_FIELDS["no"]
+    else:
+        raw = str(value)
+    return html.escape(raw[:180])
+
+
+def _build_admin_log_message(actor_id, actor_name, action, target_id=None, details=None, target_name=None, all_users=False):
+    action_key = str(action or "").strip()
+    action_title = html.escape(ADMIN_LOG_ACTIONS.get(action_key, action_key or "action")[:180])
+    actor_str = _format_admin_log_user(actor_id, actor_name, fallback=_ADMIN_LOG_ADMIN_FALLBACK)
+    if all_users:
+        target_str = html.escape(_ADMIN_LOG_TARGET_ALL_USERS)
+    elif target_id is not None:
+        target_str = _format_admin_log_user(int(target_id), target_name, fallback=_ADMIN_LOG_USER_FALLBACK)
+    elif target_name:
+        target_str = html.escape(str(target_name).strip()[:120])
+    else:
+        target_str = html.escape(_ADMIN_LOG_TARGET_BOT_SETTINGS)
+
+    lines = [
+        f"👤 {_ADMIN_LOG_LINE_ACTOR}: {actor_str}",
+        f"⚡ {_ADMIN_LOG_LINE_ACTION}: <b>{action_title}</b>",
+        f"🎯 {_ADMIN_LOG_LINE_TARGET}: {target_str}",
+    ]
+    if details:
+        if isinstance(details, dict):
+            items_iter = ((k, v) for k, v in details.items() if v is not None)
+        else:
+            items_iter = ((k, v) for k, v in details if v is not None)
+        for raw_key, raw_val in itertools.islice(items_iter, 6):
+            key_str = str(raw_key)
+            label_raw = ADMIN_LOG_FIELDS.get(key_str, key_str)
+            label_escaped = html.escape(str(label_raw)[:48])
+            val_escaped = _format_admin_log_detail_value(raw_val)
+            lines.append(f"{label_escaped}: {val_escaped}")
+
+    now_utc = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    lines.append(f"🕒 {_ADMIN_LOG_LINE_TIME}: <code>{html.escape(now_utc)}</code>")
+    return ADMIN_LOG_HEADER + "\n".join(lines)
+
+
+def _admin_log(actor, action, target_id=None, details=None, target_name=None, all_users=False):
+    actor_id, actor_name = _resolve_admin_log_actor(actor)
+    if actor_id is None or not is_admin(actor_id):
+        return False
+    if conn.in_transaction:
+        logging.error(
+            "Refusing to enqueue admin audit log inside an active transaction: actor=%s action=%s target=%s",
+            actor_id, action, target_id,
+        )
+        return False
+    message_text = _build_admin_log_message(
+        actor_id=actor_id,
+        actor_name=actor_name,
+        action=action,
+        target_id=target_id,
+        details=details,
+        target_name=target_name,
+        all_users=all_users,
+    )
+    created_at = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+    try:
+        cursor.execute(
+            "INSERT INTO admin_audit_outbox (message, created_at) VALUES (?, ?)",
+            (message_text, created_at),
+        )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logging.exception(
+            "Failed to enqueue admin audit log: actor=%s action=%s target=%s",
+            actor_id, action, target_id,
+        )
+        return False
+    global _admin_log_event
+    try:
+        if _admin_log_event is None:
+            _admin_log_event = asyncio.Event()
+        _admin_log_event.set()
+    except Exception:
+        pass
+    return True
+
+
+async def _admin_log_worker():
+    global _admin_log_event
+    if _admin_log_event is None:
+        _admin_log_event = asyncio.Event()
+    backoff = 1
+    while True:
+        row = None
+        try:
+            cursor.execute("SELECT id, message FROM admin_audit_outbox ORDER BY id ASC LIMIT 1")
+            row = cursor.fetchone()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logging.exception("Failed to fetch from admin_audit_outbox")
+            await asyncio.sleep(min(300.0, float(backoff)))
+            backoff = min(300, backoff * 2)
+            continue
+
+        if not row:
+            _admin_log_event.clear()
+            try:
+                cursor.execute("SELECT id FROM admin_audit_outbox ORDER BY id ASC LIMIT 1")
+                if cursor.fetchone():
+                    _admin_log_event.set()
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            await _admin_log_event.wait()
+            continue
+
+        row_id, text_msg = row[0], row[1]
+        try:
+            await asyncio.wait_for(
+                bot.send_message(
+                    ADMIN_LOG_CHAT_ID,
+                    text_msg,
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                    request_timeout=15,
+                ),
+                timeout=15.0,
+            )
+        except asyncio.CancelledError:
+            raise
+        except TelegramRetryAfter as retry_err:
+            wait_sec = max(0.01, float(getattr(retry_err, "retry_after", 1.0) or 1.0))
+            await asyncio.sleep(wait_sec)
+            continue
+        except Exception:
+            logging.exception("Failed to deliver admin audit log id=%s", row_id)
+            await asyncio.sleep(min(300.0, float(backoff)))
+            backoff = min(300, backoff * 2)
+            continue
+
+        backoff = 1
+        try:
+            cursor.execute("DELETE FROM admin_audit_outbox WHERE id = ?", (row_id,))
+            conn.commit()
+        except asyncio.CancelledError:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            logging.exception("Failed to delete delivered admin audit log id=%s", row_id)
+        await asyncio.sleep(ADMIN_LOG_INTERVAL)
+
+
+def _start_admin_logging():
+    global _admin_log_task, _admin_log_event
+    _ensure_runtime_schema()
+    if _admin_log_event is None:
+        _admin_log_event = asyncio.Event()
+    if _admin_log_task is not None and not _admin_log_task.done():
+        return _admin_log_task
+    _admin_log_task = asyncio.create_task(_admin_log_worker())
+    _admin_log_event.set()
+    return _admin_log_task
+
+
+async def _stop_admin_logging():
+    global _admin_log_task
+    task = _admin_log_task
+    _admin_log_task = None
+    if task is not None:
+        if not task.done():
+            task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            logging.exception("Error while stopping admin log worker")
 
 
 def parse_ban_duration(text):
@@ -2250,10 +2704,13 @@ def is_bot_command(text, chat_type="private"):
     first = parts[0]
     
     command_triggers = [
-        "мины", "м", "башня", "бш", "квак", "qwak", "frog", "лягушка", "игры", "игра", "баланс", "б", "бал",
-        "бонус", "топ", "дать", "пер", "раздача", "роздача", "giveaway", "transfer",
-        "история", "недавние", "алмазы", "алмаз", "diamond",
-        "золото", "gold", "голд", "з",
+        "мины", "mines", "м", "башня", "tower", "бш", "квак", "qwak", "frog", "лягушка",
+        "игры", "игра", "games", "game", "catalog", "каталог", "ігри", "гра", "ойындар", "ойын",
+        "баланс", "б", "бал", "balance", "bal", "b", "теңгерім",
+        "бонус", "bonus", "топ", "top", "дать", "пер", "раздача", "роздача", "giveaway", "transfer",
+        "история", "недавние", "history", "історія", "тарих",
+        "алмазы", "алмаз", "diamond", "diamonds",
+        "золото", "gold", "голд", "з", "21", "очко", "ochko", "twentyone",
         "краш", "crash", "кр",
         "слоты", "слот", "slots", "slot",
         "боулинг", "bowling", "бо",
@@ -2269,16 +2726,27 @@ def is_bot_command(text, chat_type="private"):
         "футбол", "football", "фб",
         "промо", "promo",
         "гет", "get",
-        "поинт", "поинты", "point", "points", "send", "перевод",
-        "рекорды", "рекорд", "records",
-        "депозит", "депозиты", "деп", "банк", "deposit",
+        "поинт", "поинты", "point", "points", "mp", "мп", "send", "перевод",
+        "рекорды", "рекорд", "records", "record", "рекорди", "рекордтар",
+        "депозит", "депозиты", "деп", "банк", "deposit", "deposits", "dep", "bank", "депозити",
+        "обменник", "exchange", "обмінник", "айырбастау",
+        "заработать", "заработок", "earning", "earn", "заробити", "заробіток", "табыс",
+        "продвижение", "promote", "просування", "ілгерілету",
+        "храм", "temple",
+        "настройки", "settings", "налаштування", "баптаулар",
+        "язык", "language", "lang", "мова", "тіл",
         "реф", "рефералы", "реферал", "ref", "referral"
     ]
     
     if first in command_triggers:
         return True
         
-    if text in ["топ чата", "топ ч", "топ чат", "история игр", "недавние игры", "топ рекорды", "топ рекордов", "топ рекорд"]:
+    if text in [
+        "топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы", "top chat", "chat top", "топ чату", "чат тобы",
+        "топ игроков", "мировой топ", "top players", "world top", "топ гравців", "світовий топ", "ойыншылар тобы", "әлемдік топ",
+        "история игр", "недавние игры", "игры история", "recent games", "game history", "історія ігор", "ойындар тарихы",
+        "топ рекорды", "топ рекордов", "топ рекорд", "top records"
+    ]:
         return True
         
     return False
@@ -2288,6 +2756,7 @@ def is_bot_command(text, chat_type="private"):
 @_localized
 async def save_username_middleware(handler, event, data):
     if event.from_user:
+        _ensure_user_language(event.from_user)
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
         if event.chat and event.chat.type in ["group", "supergroup"]:
             add_chat_member(event.from_user.id, event.chat.id)
@@ -2316,6 +2785,7 @@ async def save_username_middleware(handler, event, data):
 @_localized
 async def save_username_cb_middleware(handler, event, data):
     if event.from_user:
+        _ensure_user_language(event.from_user)
         save_username(event.from_user.id, event.from_user.username, event.from_user.first_name)
         if event.message and event.message.chat and event.message.chat.type in ["group", "supergroup"]:
             add_chat_member(event.from_user.id, event.message.chat.id)
@@ -2463,9 +2933,9 @@ def resolve_bet_amount(text, balance=0):
     if not text:
         return None
     t = text.lower().strip()
-    if t in ["все", "всё", "all", "allin", "вб", "ва-банк", "вабанк", "ва банк"]:
+    if t in ["все", "всё", "all", "allin", "вб", "ва-банк", "вабанк", "ва банк", "усе", "всі", "барлығы", "бәрі"]:
         return balance
-    if t in ["пол", "половина", "half", "1/2"]:
+    if t in ["пол", "половина", "half", "1/2", "пів", "половину", "жарты", "жартысы"]:
         return balance // 2
     return parse_amount(text)
 
@@ -3466,8 +3936,8 @@ async def show_recent_games_menu(message_or_callback, user_id, user_name, page=1
             )
 
 
-@dp.message(Command("history", "история"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["история", "недавние игры", "игры история", "история игр"]))
+@dp.message(Command("history", "история", "історія", "тарих"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["история", "недавние игры", "игры история", "история игр", "history", "recent games", "game history", "історія", "історія ігор", "тарих", "ойындар тарихы"]))
 @_localized
 async def cmd_history(message: types.Message):
     await show_recent_games_menu(message, message.from_user.id, get_user_display_name(message.from_user.id, message.from_user.first_name), page=1)
@@ -4087,6 +4557,13 @@ async def cmd_add(message: types.Message):
     new_balance = user_data["balance"] + amount
 
     if update_user(target_user_id, balance=new_balance):
+        _admin_log(
+            message.from_user,
+            "add_balance",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"amount": format_number(amount), "balance": format_number(new_balance), "currency": "mCoin"},
+        )
         await message.reply(
             _lf('<i>✅ Successfully! На баланс пользователя {0} добавлено {1} mCoin\nТекущий баланс: {2} mCoin</i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(new_balance), '', -1))),
             parse_mode=ParseMode.HTML
@@ -4130,6 +4607,13 @@ async def cmd_set(message: types.Message):
         return
     if update_user(target_user_id, balance=amount):
         user_data = get_user(target_user_id)
+        _admin_log(
+            message.from_user,
+            "zero_balance" if int(amount) == 0 else "set_balance",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"balance": format_number(user_data["balance"]), "currency": "mCoin"},
+        )
         await message.reply(
             _lf('<i>✅ Successfully! Баланс пользователя {0} установлен на {1} mCoin</i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(user_data['balance']), '', -1))),
             parse_mode=ParseMode.HTML
@@ -4226,6 +4710,13 @@ async def cmd_setrec(message: types.Message):
 
     kwargs = {col_name: amount}
     if update_user(target_user_id, **kwargs):
+        _admin_log(
+            message.from_user,
+            "set_record",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"field": col_name, "value": format_number(amount)},
+        )
         admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -4299,6 +4790,7 @@ async def cmd_delrec(message: types.Message):
 
     if not field_arg or field_arg.lower().strip() in ["все", "all", "всё"]:
         success = update_user(target_user_id, max_balance=cur_balance, games=0, lost=0)
+        log_field = "all"
         desc = _lf('Все рекорды сброшены (Макс. баланс: {0} m¢, Игры: 0, Проиграно: 0)', (_fmt(format_number(cur_balance), '', -1),))
     else:
         col_name, col_title = parse_record_field(field_arg)
@@ -4310,9 +4802,17 @@ async def cmd_delrec(message: types.Message):
             return
         val = cur_balance if col_name == "max_balance" else 0
         success = update_user(target_user_id, **{col_name: val})
+        log_field = col_name
         desc = _lf('Рекорд «{0}» сброшен в {1}', (_fmt(_label(col_title), '', -1), _fmt(format_number(val), '', -1)))
 
     if success:
+        _admin_log(
+            message.from_user,
+            "reset_record",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"field": log_field},
+        )
         admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -4339,6 +4839,12 @@ async def cmd_sna(message: types.Message):
         cursor.execute("SELECT COUNT(*) FROM users")
         row = cursor.fetchone()
         total_users = row[0] if row else 0
+        _admin_log(
+            message.from_user,
+            "reset_balances",
+            all_users=True,
+            details={"users": total_users, "currency": "mCoin"},
+        )
         await message.reply(
             _lf('<i>✅ Successfully! Баланс всех игроков обнулен.\n👥 Всего пользователей: {0}</i>', (_fmt(total_users, '', -1),)),
             parse_mode=ParseMode.HTML
@@ -4374,6 +4880,12 @@ async def cmd_sn(message: types.Message):
         cursor.execute("SELECT COUNT(*) FROM users")
         row = cursor.fetchone()
         total_users = row[0] if row else 0
+        _admin_log(
+            message.from_user,
+            "reset_database",
+            all_users=True,
+            details={"users": total_users},
+        )
 
         await message.reply(
             _lf('<i>✅ Successfully! База данных полностью очищена.\n👥 Сохранены только профили пользователей ({0} шт.).\n🗑 Балансы, статистика (сыграно/проиграно), история игр, переводов и промокоды удалены.</i>', (_fmt(total_users, '', -1),)),
@@ -4457,6 +4969,12 @@ async def cmd_unbd(message: types.Message):
         active_games.pop(target_user_id, None)
 
         clean_name = html.escape(get_user_display_name(target_user_id, target_name))
+        _admin_log(
+            message.from_user,
+            "delete_user",
+            target_id=target_user_id,
+            target_name=target_name,
+        )
         await message.reply(
             _lf('<i>✅ Successfully! Пользователь <b>{0}</b> (<code>{1}</code>) полностью удален из базы данных!</i>', (_fmt(clean_name, '', -1), _fmt(target_user_id, '', -1))),
             parse_mode=ParseMode.HTML
@@ -4525,6 +5043,11 @@ async def cmd_cprom(message: types.Message):
                 created_at = EXCLUDED.created_at
         ''', (promo_name, reward, activations, activations, now_str))
         conn.commit()
+        _admin_log(
+            message.from_user,
+            "create_promo",
+            details={"code": promo_name, "amount": format_number(reward), "currency": "mCoin", "activations": activations},
+        )
 
         await message.reply(
             _lf('<i>✅ Промокод «<b>{0}</b>» успешно создан!\n💰 Награда: <b>{1}</b> mCoin\n👥 Количество активаций: <b>{2}</b></i>', (_fmt(html.escape(promo_name), '', -1), _fmt(format_number(reward), '', -1), _fmt(activations, '', -1))),
@@ -4678,6 +5201,11 @@ async def cmd_event(message: types.Message):
     )
 
     event_message_id = msg.message_id
+    _admin_log(
+        message.from_user,
+        "event",
+        details={"amount": format_number(prize), "currency": "mCoin", "users": max_participants, "value": f"{min_num}-{max_num}"},
+    )
 
     await bot.pin_chat_message(chat_id=message.chat.id, message_id=msg.message_id)
 
@@ -4936,15 +5464,15 @@ async def cmd_i(message: types.Message):
     await message.delete()
 
 
-@dp.message(Command("top"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ", "топ игроков", "мировой топ"]))
+@dp.message(Command("top", "топ"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["топ", "топ игроков", "мировой топ", "top", "top players", "world top", "топ гравців", "світовий топ", "ойыншылар тобы", "әлемдік топ"]))
 @_localized
 async def cmd_top(message: types.Message):
     await show_top(message)
 
 
 @dp.message(Command("top_chat", "topchat"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы"]))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["топ чата", "топ ч", "топ чат", "топ беседы", "топбеседы", "top chat", "chat top", "топ чату", "чат тобы"]))
 @_localized
 async def cmd_top_chat(message: types.Message):
     if message.chat.type not in ["group", "supergroup"]:
@@ -5016,17 +5544,18 @@ async def show_records(message: types.Message):
     )
 
 
-@dp.message(Command("records", "record", "рекорды", "рекорд"))
+@dp.message(Command("records", "record", "рекорды", "рекорд", "рекорди", "рекордтар"))
 @dp.message(_inline_filter(lambda message: message.text and message.text.lower().strip() in [
-    "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top"
+    "рекорды", "рекорд", "топ рекорды", "топ рекордов", "топ рекорд", "records", "/records", "/рекорды", "records_top",
+    "record", "top records", "рекорди", "рекордтар", "/рекорди", "/рекордтар"
 ]))
 @_localized
 async def cmd_records(message: types.Message):
     await show_records(message)
 
 
-@dp.message(Command("game", "games"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["игры", "игра", "каталог"]))
+@dp.message(Command("game", "games", "игры", "игра", "ігри", "гра", "ойындар", "ойын"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["игры", "игра", "каталог", "games", "game", "catalog", "ігри", "гра", "ойындар", "ойын"]))
 @_localized
 async def cmd_game(message: types.Message):
     is_group = message.chat.type in ["group", "supergroup"]
@@ -8179,7 +8708,8 @@ async def cmd_promo(message: types.Message):
 
 
 
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() in ["б", "баланс", "бал"]))
+@dp.message(Command("balance", "bal", "баланс", "бал", "теңгерім"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["б", "баланс", "бал", "b", "bal", "balance", "теңгерім"]))
 @_localized
 async def cmd_balance(message: types.Message):
     user_id = message.from_user.id
@@ -8213,7 +8743,7 @@ async def cmd_balance(message: types.Message):
         )
 
 
-@dp.message(_inline_filter(lambda message: message.text and message.text.lower() == "бонус" and message.chat.type in ["group", "supergroup"]))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("бонус", "bonus", "/bonus", "/бонус") and message.chat.type in ["group", "supergroup"]))
 @_localized
 async def cmd_bonus(message: types.Message):
     user_id = message.from_user.id
@@ -13140,16 +13670,27 @@ def _apply_mp_transfer(sender_id, receiver_id, amount, today):
     if amount <= 0 or sender_id == receiver_id:
         return False
     try:
-        cursor.execute(
-            """
+        if int(sender_id) == UNRESTRICTED_OWNER_ID:
+            cursor.execute(
+                """
+                UPDATE users SET mp_balance = mp_balance - ?,
+                    mp_daily_transferred = CASE WHEN mp_daily_date = ? THEN COALESCE(mp_daily_transferred, 0) + ? ELSE ? END,
+                    mp_daily_date = ?
+                WHERE user_id = ? AND mp_balance >= ?
+                """,
+                (amount, today, amount, amount, today, sender_id, amount),
+            )
+        else:
+            cursor.execute(
+                """
             UPDATE users SET mp_balance = mp_balance - ?,
                 mp_daily_transferred = CASE WHEN mp_daily_date = ? THEN COALESCE(mp_daily_transferred, 0) + ? ELSE ? END,
                 mp_daily_date = ?
             WHERE user_id = ? AND mp_balance >= ?
                 AND CASE WHEN mp_daily_date = ? THEN COALESCE(mp_daily_transferred, 0) ELSE 0 END + ? <= 1000
             """,
-            (amount, today, amount, amount, today, sender_id, amount, today, amount),
-        )
+                (amount, today, amount, amount, today, sender_id, amount, today, amount),
+            )
         if cursor.rowcount != 1:
             return False
         cursor.execute("UPDATE users SET mp_balance = mp_balance + ? WHERE user_id = ?", (amount, receiver_id))
@@ -13294,6 +13835,15 @@ async def cmd_transfer(message: types.Message):
         await message.reply(_l('<i>Не удалось выполнить перевод. Средства не списаны.</i>'), parse_mode=ParseMode.HTML)
         return
 
+    if is_admin(user_id):
+        _admin_log(
+            message.from_user,
+            "transfer_mcoin",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"amount": format_number(amount), "balance": format_number(new_sender_balance), "currency": "mCoin"},
+        )
+
     sender_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Игрок'))
     sender_link = f'<a href="tg://user?id={user_id}">{sender_name}</a>'
     clean_target_name = html.escape(get_user_display_name(target_user_id, target_name))
@@ -13328,10 +13878,11 @@ async def cmd_point(message: types.Message):
     user_id = message.from_user.id
     user_data = get_user(user_id)
     mp_balance = user_data.get("mp_balance", 0) or 0
-    rem_limit = get_user_mp_limit(user_data)
+    rem_limit = get_user_mp_limit(user_data, user_id)
+    rem_limit_str = "∞" if rem_limit is None else format_number(rem_limit)
 
     text = (
-        _lf('💎 Баланс: {0} MP\n<code>·····················</code>\n<blockquote>Лимит: {1} MP/д.</blockquote>', (_fmt(format_number(mp_balance), '', -1), _fmt(format_number(rem_limit), '', -1)))
+        _lf('💎 Баланс: {0} MP\n<code>·····················</code>\n<blockquote>Лимит: {1} MP/д.</blockquote>', (_fmt(format_number(mp_balance), '', -1), _fmt(rem_limit_str, '', -1)))
     )
 
     if message.chat.type in ["group", "supergroup"]:
@@ -13448,8 +13999,8 @@ async def cmd_send_mp(message: types.Message):
         )
         return
 
-    rem_limit = get_user_mp_limit(user_data)
-    if amount > rem_limit:
+    rem_limit = get_user_mp_limit(user_data, user_id)
+    if rem_limit is not None and amount > rem_limit:
         await message.reply(
             _lf('<i>Превышен суточный лимит переводов!\n📮 Доступно сегодня: <b>{0} MP/д.</b></i>', (_fmt(format_number(rem_limit), '', -1),)),
             parse_mode=ParseMode.HTML
@@ -13540,8 +14091,8 @@ async def process_mp_yes(callback: types.CallbackQuery):
         await callback.answer(_l('Недостаточно MP на балансе!'), show_alert=True)
         return
 
-    rem_limit = get_user_mp_limit(sender_data)
-    if amount > rem_limit:
+    rem_limit = get_user_mp_limit(sender_data, sender_id)
+    if rem_limit is not None and amount > rem_limit:
         await callback.answer(_l('Превышен суточный лимит переводов!'), show_alert=True)
         return
 
@@ -13564,12 +14115,21 @@ async def process_mp_yes(callback: types.CallbackQuery):
     else:
         new_daily_transferred = (sender_data.get("mp_daily_transferred", 0) or 0) + amount
 
-    new_rem_limit = max(0, 1000 - new_daily_transferred)
+    new_rem_limit = None if rem_limit is None else max(0, 1000 - new_daily_transferred)
+    new_rem_limit_str = "∞" if new_rem_limit is None else format_number(new_rem_limit)
 
     if not _apply_mp_transfer(sender_id, receiver_id, amount, today_str):
         await callback.answer(_l('Не удалось выполнить перевод. Средства не списаны.'), show_alert=True)
         return
     mp_pending_transfers.pop(token, None)
+    if is_admin(sender_id):
+        _admin_log(
+            callback.from_user,
+            "transfer_mp",
+            target_id=receiver_id,
+            target_name=transfer.get("target_name"),
+            details={"amount": format_number(amount), "balance": format_number(sender_mp_after), "currency": "MP"},
+        )
 
     sender_name = html.escape(get_user_display_name(callback.from_user.id, callback.from_user.first_name) or _l('Игрок'))
     sender_link = f'<a href="tg://user?id={sender_id}">{sender_name}</a>'
@@ -13578,7 +14138,7 @@ async def process_mp_yes(callback: types.CallbackQuery):
     target_link = f'<a href="tg://user?id={receiver_id}">{target_name}</a>'
 
     success_msg = (
-        _lf('🔹 {0} перевел(-а) <b>{1} MP </b> {2}. \n<blockquote>📮 Лимит: {3} MP</blockquote>\n<code>·····················</code>\n💎 Баланс: <s>{4}</s> → {5} MP', (_fmt(sender_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(target_link, '', -1), _fmt(format_number(new_rem_limit), '', -1), _fmt(format_number(sender_mp_before), '', -1), _fmt(format_number(sender_mp_after), '', -1)))
+        _lf('🔹 {0} перевел(-а) <b>{1} MP </b> {2}. \n<blockquote>📮 Лимит: {3} MP</blockquote>\n<code>·····················</code>\n💎 Баланс: <s>{4}</s> → {5} MP', (_fmt(sender_link, '', -1), _fmt(format_number(amount), '', -1), _fmt(target_link, '', -1), _fmt(new_rem_limit_str, '', -1), _fmt(format_number(sender_mp_before), '', -1), _fmt(format_number(sender_mp_after), '', -1)))
     )
 
     try:
@@ -13654,11 +14214,20 @@ async def cmd_addmp(message: types.Message):
 
     u_data = get_user(target_user_id)
     new_bal = u_data.get("mp_balance", 0) + amount
-    update_user(target_user_id, mp_balance=new_bal)
-    await message.reply(
-        _lf('<i>✅ На баланс {0} добавлено <b>{1} MP</b>\n💎 Текущий баланс: <b>{2} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(new_bal), '', -1))),
-        parse_mode=ParseMode.HTML
-    )
+    if update_user(target_user_id, mp_balance=new_bal):
+        _admin_log(
+            message.from_user,
+            "add_mp",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"amount": format_number(amount), "balance": format_number(new_bal), "currency": "MP"},
+        )
+        await message.reply(
+            _lf('<i>✅ На баланс {0} добавлено <b>{1} MP</b>\n💎 Текущий баланс: <b>{2} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1), _fmt(format_number(new_bal), '', -1))),
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await message.reply(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
 @dp.message(Command("setmp"))
@@ -13706,11 +14275,20 @@ async def cmd_setmp(message: types.Message):
         target_name = None
 
     get_user(target_user_id)
-    update_user(target_user_id, mp_balance=amount)
-    await message.reply(
-        _lf('<i>✅ Баланс MP {0} установлен на <b>{1} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1))),
-        parse_mode=ParseMode.HTML
-    )
+    if update_user(target_user_id, mp_balance=amount):
+        _admin_log(
+            message.from_user,
+            "zero_mp" if int(amount) == 0 else "set_mp",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"balance": format_number(amount), "currency": "MP"},
+        )
+        await message.reply(
+            _lf('<i>✅ Баланс MP {0} установлен на <b>{1} MP</b></i>', (_fmt(html.escape(get_user_display_name(target_user_id, target_name) if target_name is not None else _l('ваш')), '', -1), _fmt(format_number(amount), '', -1))),
+            parse_mode=ParseMode.HTML
+        )
+    else:
+        await message.reply(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
 
 
 
@@ -13800,6 +14378,11 @@ async def cmd_giveaway(message: types.Message):
     )
 
     giveaways[gid]["message_id"] = msg.message_id
+    _admin_log(
+        message.from_user,
+        "giveaway",
+        details={"amount": format_number(amount), "currency": "mCoin", "activations": activations},
+    )
 
     try:
         await bot.pin_chat_message(chat_id=chat_id, message_id=msg.message_id)
@@ -13925,7 +14508,11 @@ async def _send_demo_status(target, user_id, edit=False):
         f"{tr(user_id, 'demo_description')}"
     )
     if edit:
-        await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
+        try:
+            await target.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
+        except TelegramBadRequest as exc:
+            if "message is not modified" not in str(exc).lower():
+                raise
     else:
         await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=_demo_keyboard(user_id))
 
@@ -14016,6 +14603,15 @@ def _language_keyboard(user_id):
     ])
 
 
+def _language_text(user_id):
+    language = get_user_language(user_id)
+    return (
+        f"{tr(user_id, 'language_title')}\n"
+        f"{tr(user_id, 'language_current', language=html.escape(LANGUAGE_NAMES.get(language, language)))}\n\n"
+        f"{tr(user_id, 'language_prompt')}"
+    )
+
+
 async def _show_settings(target, user_id, edit=False):
     text = _settings_text(user_id)
     markup = _settings_keyboard(user_id)
@@ -14028,8 +14624,26 @@ async def _show_settings(target, user_id, edit=False):
         await target.answer(text, parse_mode=ParseMode.HTML, reply_markup=markup)
 
 
-@dp.message(Command("settings", "настройки"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings")))
+@dp.message(Command("language", "lang", "язык", "мова", "тіл"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower().split()[0] in ("/language", "/lang", "/язык", "язык", "language", "lang", "/мова", "мова", "/тіл", "тіл")))
+@_localized
+async def cmd_language(message: types.Message):
+    user_id = int(message.from_user.id)
+    parts = (message.text or "").strip().split()
+    if len(parts) > 1:
+        raw_lang = parts[1].strip().lower()
+        if raw_lang in LANGUAGE_NAMES or raw_lang in ("ua", "kz"):
+            selected = _telegram_language(raw_lang)
+            set_user_settings(user_id, language=selected)
+    await message.answer(
+        _language_text(user_id),
+        parse_mode=ParseMode.HTML,
+        reply_markup=_language_keyboard(user_id),
+    )
+
+
+@dp.message(Command("settings", "настройки", "налаштування", "баптаулар"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ("настройки", "/настройки", "/settings", "settings", "налаштування", "/налаштування", "баптаулар", "/баптаулар")))
 @_localized
 async def cmd_settings(message: types.Message):
     if message.chat.type != "private":
@@ -14040,25 +14654,35 @@ async def cmd_settings(message: types.Message):
 
 async def _handle_settings_callback(callback: types.CallbackQuery):
     user_id = int(callback.from_user.id)
+    data = str(callback.data or "")
+    if data.startswith("settings_lang_"):
+        language = data.rsplit("_", 1)[-1]
+        if language in LANGUAGE_NAMES:
+            set_user_settings(user_id, language=language)
+        if callback.message and callback.message.chat.type == "private":
+            await _show_settings(callback.message, user_id, edit=True)
+        elif callback.message:
+            try:
+                await callback.message.edit_text(
+                    _language_text(user_id),
+                    parse_mode=ParseMode.HTML,
+                    reply_markup=_language_keyboard(user_id),
+                )
+            except Exception:
+                pass
+        await callback.answer(tr(user_id, "settings_language_saved"))
+        return
     if not callback.message or callback.message.chat.type != "private":
         await callback.answer(tr(user_id, "settings_private_only"), show_alert=True)
         return
-    data = str(callback.data or "")
     if data == "settings_open":
         await _show_settings(callback.message, user_id, edit=True)
     elif data == "settings_languages":
         await callback.message.edit_text(
-            f"{tr(user_id, 'settings_language')}:",
+            _language_text(user_id),
             parse_mode=ParseMode.HTML,
             reply_markup=_language_keyboard(user_id),
         )
-    elif data.startswith("settings_lang_"):
-        language = data.rsplit("_", 1)[-1]
-        if language in LANGUAGE_NAMES:
-            set_user_settings(user_id, language=language)
-        await _show_settings(callback.message, user_id, edit=True)
-        await callback.answer(tr(user_id, "settings_language_saved"))
-        return
     elif data in ("settings_demo_on", "settings_demo_off"):
         _set_demo_mode(user_id, data.endswith("_on"))
         await _show_settings(callback.message, user_id, edit=True)
@@ -14267,7 +14891,16 @@ async def process_admin_control_callback(callback: types.CallbackQuery):
         if flag in ("0", "1") and permission in _ADMIN_PERMISSION_COLUMNS:
             enabled = flag == "1"
             targets = _admin_control_ids(owner_id)
-            done = sum(1 for admin_id in targets if set_admin_permission(admin_id, permission, enabled, owner_id))
+            done = 0
+            for admin_id in targets:
+                if set_admin_permission(admin_id, permission, enabled, owner_id):
+                    done += 1
+                    _admin_log(
+                        callback.from_user,
+                        "admin_permission",
+                        target_id=admin_id,
+                        details={"permission": permission, "enabled": enabled},
+                    )
             await callback.message.edit_text(
                 _lf('<b>✅ Готово</b>\nПраво <b>{0}</b> {1} для {2} администраторов.', (_fmt(html.escape(permission), '', -1), _fmt(_l('разрешено') if enabled else _l('запрещено'), '', -1), _fmt(done, '', -1))),
                 parse_mode=ParseMode.HTML,
@@ -14336,8 +14969,20 @@ async def process_admin_limit_input(message: types.Message):
         if amount is None or amount < 0:
             await message.reply(_l('<i>Неверная сумма. Отправьте число, например <code>10кк</code>, или <code>0</code>.</i>'), parse_mode=ParseMode.HTML)
             return
-    changed = [uid for uid in session.get("targets", []) if set_admin_limit(uid, kind, amount, owner_id)]
+    changed = []
+    for uid in session.get("targets", []):
+        if set_admin_limit(uid, kind, amount, owner_id):
+            changed.append(uid)
+            _admin_log(
+                message.from_user,
+                "admin_limit",
+                target_id=uid,
+                details={"kind": kind, "value": "∞" if not amount else format_number(amount)},
+            )
     admin_limit_sessions.pop(owner_id, None)
+    if not changed:
+        await message.reply(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
+        return
     await message.reply(
         _lf('<i>✅ Лимит <b>{0}</b> для <code>{1}</code>: <b>{2}</b> в сутки.</i>', (_fmt(html.escape(kind), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1), _fmt(format_number(amount) if amount else _l('безлимит'), '', -1))),
         parse_mode=ParseMode.HTML
@@ -14383,7 +15028,19 @@ async def cmd_admin_limit(message: types.Message):
         if amount is None or amount < 0:
             await message.answer(_l('<i>Неверная сумма лимита.</i>'), parse_mode=ParseMode.HTML)
             return
-    changed = [uid for uid in target_ids if set_admin_limit(uid, kind, amount, message.from_user.id)]
+    changed = []
+    for uid in target_ids:
+        if set_admin_limit(uid, kind, amount, message.from_user.id):
+            changed.append(uid)
+            _admin_log(
+                message.from_user,
+                "admin_limit",
+                target_id=uid,
+                details={"kind": kind, "value": "∞" if not amount else format_number(amount)},
+            )
+    if not changed:
+        await message.answer(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
+        return
     title = {"transfer": _l('mCoin передачи'), "issue": _l('mCoin выдачи'), "both": _l('mCoin передачи и выдачи'), "mp_transfer": _l('MP передачи'), "mp_issue": _l('MP выдачи'), "mp_both": _l('MP передачи и выдачи'), "all": _l('все операции')}[kind]
     await message.answer(
         _lf('<i>✅ Для {0} администраторов (<code>{1}</code>) установлен лимит {2}: <b>{3}</b> в сутки.</i>', (_fmt(len(changed), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1), _fmt(title, '', -1), _fmt(format_number(amount) if amount else _l('безлимит'), '', -1))),
@@ -14419,7 +15076,19 @@ async def cmd_admin_permission(message: types.Message):
         await message.answer(_l('<i>Укажите on или off.</i>'), parse_mode=ParseMode.HTML)
         return
     enabled = args[2].lower() in ("on", "1", "да", "yes", "вкл", "разрешить")
-    changed = [uid for uid in target_ids if set_admin_permission(uid, permission, enabled, message.from_user.id)]
+    changed = []
+    for uid in target_ids:
+        if set_admin_permission(uid, permission, enabled, message.from_user.id):
+            changed.append(uid)
+            _admin_log(
+                message.from_user,
+                "admin_permission",
+                target_id=uid,
+                details={"permission": permission, "enabled": enabled},
+            )
+    if not changed:
+        await message.answer(_l('<i>Ошибка базы данных!</i>'), parse_mode=ParseMode.HTML)
+        return
     await message.answer(
         _lf('<i>✅ Право <b>{0}</b> {1} для <code>{2}</code>.</i>', (_fmt(html.escape(permission), '', -1), _fmt(_l('разрешено') if enabled else _l('запрещено'), '', -1), _fmt(', '.join((str(x) for x in changed)), '', -1))),
         parse_mode=ParseMode.HTML
@@ -14491,7 +15160,11 @@ async def cmd_ban(message: types.Message):
         await message.answer(_l('<i>Вы не можете забанить самого себя!</i>'), parse_mode=ParseMode.HTML)
         return
 
-    if target_user_id in ADMINS:
+    if int(target_user_id) == UNRESTRICTED_OWNER_ID:
+        await message.answer(_l('<i>Нельзя забанить администратора!</i>'), parse_mode=ParseMode.HTML)
+        return
+
+    if target_user_id in ADMINS and int(user_id) != UNRESTRICTED_OWNER_ID:
         await message.answer(_l('<i>Нельзя забанить администратора!</i>'), parse_mode=ParseMode.HTML)
         return
 
@@ -14511,6 +15184,13 @@ async def cmd_ban(message: types.Message):
         until_text = _l('навсегда')
 
     if ban_user(target_user_id, reason, until_dt, is_permanent):
+        _admin_log(
+            message.from_user,
+            "ban",
+            target_id=target_user_id,
+            target_name=target_name,
+            details={"reason": reason, "until": until_text},
+        )
         admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14571,6 +15251,12 @@ async def cmd_unban(message: types.Message):
         return
 
     if unban_user(target_user_id):
+        _admin_log(
+            message.from_user,
+            "unban",
+            target_id=target_user_id,
+            target_name=target_name,
+        )
         admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
         admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
         target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14624,7 +15310,15 @@ async def cmd_tban(message: types.Message):
         target_user_id = user_id
         target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
-    ban_user_top(target_user_id)
+    if not ban_user_top(target_user_id):
+        await message.answer(_l('<i>Ошибка при блокировке пользователя!</i>'), parse_mode=ParseMode.HTML)
+        return
+    _admin_log(
+        message.from_user,
+        "top_ban",
+        target_id=target_user_id,
+        target_name=target_name,
+    )
     admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14676,7 +15370,15 @@ async def cmd_untban(message: types.Message):
         target_user_id = user_id
         target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
-    unban_user_top(target_user_id)
+    if not unban_user_top(target_user_id):
+        await message.answer(_l('<i>Ошибка при разбане пользователя!</i>'), parse_mode=ParseMode.HTML)
+        return
+    _admin_log(
+        message.from_user,
+        "top_unban",
+        target_id=target_user_id,
+        target_name=target_name,
+    )
     admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14728,7 +15430,15 @@ async def cmd_trban(message: types.Message):
         target_user_id = user_id
         target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
-    ban_user_transfers(target_user_id)
+    if not ban_user_transfers(target_user_id):
+        await message.answer(_l('<i>Ошибка при блокировке пользователя!</i>'), parse_mode=ParseMode.HTML)
+        return
+    _admin_log(
+        message.from_user,
+        "transfer_ban",
+        target_id=target_user_id,
+        target_name=target_name,
+    )
     admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14780,7 +15490,15 @@ async def cmd_untrban(message: types.Message):
         target_user_id = user_id
         target_name = get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Администратор')
 
-    unban_user_transfers(target_user_id)
+    if not unban_user_transfers(target_user_id):
+        await message.answer(_l('<i>Ошибка при разбане пользователя!</i>'), parse_mode=ParseMode.HTML)
+        return
+    _admin_log(
+        message.from_user,
+        "transfer_unban",
+        target_id=target_user_id,
+        target_name=target_name,
+    )
     admin_name = html.escape(get_user_display_name(message.from_user.id, message.from_user.first_name) or _l('Админ'))
     admin_link = f'<a href="tg://user?id={user_id}">{admin_name}</a>'
     target_link = f'<a href="tg://user?id={target_user_id}">{html.escape(get_user_display_name(target_user_id, target_name))}</a>'
@@ -14909,14 +15627,15 @@ async def cmd_get(message: types.Message):
         user_mention = f'<a href="tg://user?id={target_user_id}">{clean_target_name}</a>'
 
     mp_balance = u_data.get("mp_balance", 0) or 0
-    mp_limit = get_user_mp_limit(u_data)
+    mp_limit = get_user_mp_limit(u_data, target_user_id)
+    mp_limit_str = "∞" if mp_limit is None else format_number(mp_limit)
 
     max_bal = u_data.get("max_balance") if u_data.get("max_balance") is not None else balance
     games_count = u_data.get("games", 0) or 0
     lost_amount = u_data.get("lost", 0) or 0
 
     info_text = (
-        _lf('<tg-emoji emoji-id="5465665476971471368">👤</tg-emoji> <b>Информация о пользователе:</b>\n<blockquote>Игрок: {0}\nID: <code>{1}</code></blockquote>\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{2} m¢</b>\n💎 <b>MP Баланс:</b> <b>{3} MP</b> (Лимит: {4}/д.)\n📅 <b>Регистрация:</b> <i>{5}</i>\n👑 <b>Рекорды:</b>\n<blockquote>• Макс. баланс: <b>{6} m¢</b>\n• Сыграно игр: <b>{7}</b>\n• Проиграно: <b>{8} m¢</b></blockquote>\n🛡 <b>Статус бана:</b> {9}\n🏆 <b>Статус топа:</b> {10}\n💳 <b>Статус переводов:</b> {11}\n<code>·····················</code>\n🕹 <b>Последняя игра:</b>\n{12}', (_fmt(user_mention, '', -1), _fmt(target_user_id, '', -1), _fmt(format_number(balance), '', -1), _fmt(format_number(mp_balance), '', -1), _fmt(format_number(mp_limit), '', -1), _fmt(reg_date, '', -1), _fmt(format_number(max_bal), '', -1), _fmt(format_number(games_count), '', -1), _fmt(format_number(lost_amount), '', -1), _fmt(ban_status, '', -1), _fmt(top_ban_status, '', -1), _fmt(tr_ban_status, '', -1), _fmt(last_game_str, '', -1)))
+        _lf('<tg-emoji emoji-id="5465665476971471368">👤</tg-emoji> <b>Информация о пользователе:</b>\n<blockquote>Игрок: {0}\nID: <code>{1}</code></blockquote>\n<code>·····················</code>\n<tg-emoji emoji-id="5418238674267556907">⭐</tg-emoji> <b>Баланс:</b> <b>{2} m¢</b>\n💎 <b>MP Баланс:</b> <b>{3} MP</b> (Лимит: {4}/д.)\n📅 <b>Регистрация:</b> <i>{5}</i>\n👑 <b>Рекорды:</b>\n<blockquote>• Макс. баланс: <b>{6} m¢</b>\n• Сыграно игр: <b>{7}</b>\n• Проиграно: <b>{8} m¢</b></blockquote>\n🛡 <b>Статус бана:</b> {9}\n🏆 <b>Статус топа:</b> {10}\n💳 <b>Статус переводов:</b> {11}\n<code>·····················</code>\n🕹 <b>Последняя игра:</b>\n{12}', (_fmt(user_mention, '', -1), _fmt(target_user_id, '', -1), _fmt(format_number(balance), '', -1), _fmt(format_number(mp_balance), '', -1), _fmt(mp_limit_str, '', -1), _fmt(reg_date, '', -1), _fmt(format_number(max_bal), '', -1), _fmt(format_number(games_count), '', -1), _fmt(format_number(lost_amount), '', -1), _fmt(ban_status, '', -1), _fmt(top_ban_status, '', -1), _fmt(tr_ban_status, '', -1), _fmt(last_game_str, '', -1)))
     )
 
     get_keyboard = InlineKeyboardMarkup(
@@ -14952,7 +15671,15 @@ async def process_adm_reset_rec(callback: types.CallbackQuery):
 
     u_data = get_user(target_user_id)
     cur_bal = u_data.get("balance", 0)
-    update_user(target_user_id, max_balance=cur_bal, games=0, lost=0)
+    if not update_user(target_user_id, max_balance=cur_bal, games=0, lost=0):
+        await callback.answer(_l('Ошибка базы данных!'), show_alert=True)
+        return
+    _admin_log(
+        callback.from_user,
+        "reset_record",
+        target_id=target_user_id,
+        details={"field": "all"},
+    )
     await callback.answer(_l('✅ Рекорды пользователя успешно сброшены!'), show_alert=True)
     target_name = get_user_display_name(target_user_id)
     try:
@@ -15141,8 +15868,8 @@ def build_deposit_main_menu(user_id, user_name):
     return text, InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.message(Command("deposit", "депозит", "банк", "депозиты"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк"]))
+@dp.message(Command("deposit", "депозит", "банк", "депозиты", "bank", "депозити"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["депозит", "депозиты", "деп", "банк", "/deposit", "/депозит", "/банк", "deposit", "deposits", "dep", "bank", "/bank", "депозити", "/депозити"]))
 @_localized
 async def cmd_deposit(message: types.Message):
     user_id = message.from_user.id
@@ -16570,8 +17297,8 @@ def render_sexchange_menu():
 
 
 
-@dp.message(Command("exchange", "обменник"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник"]))
+@dp.message(Command("exchange", "обменник", "обмінник", "айырбастау"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["обменник", "/exchange", "exchange", "/обменник", "обмінник", "/обмінник", "айырбастау", "/айырбастау"]))
 @_localized
 async def cmd_exchange(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
@@ -17762,6 +18489,11 @@ async def cb_sexch_tog_sell(callback: types.CallbackQuery):
     new_val = 0 if settings.get("official_sell_enabled", 1) else 1
     cursor.execute("UPDATE p2p_settings SET official_sell_enabled = ? WHERE id = 1", (new_val,))
     conn.commit()
+    _admin_log(
+        callback.from_user,
+        "p2p_settings",
+        details={"setting": "official_sell_enabled", "enabled": bool(new_val)},
+    )
     await callback.answer(_l('Статус оф. продажи изменен!'))
     text, kb = render_sexchange_menu()
     try:
@@ -17779,6 +18511,11 @@ async def cb_sexch_tog_buy(callback: types.CallbackQuery):
     new_val = 0 if settings.get("official_buy_enabled", 1) else 1
     cursor.execute("UPDATE p2p_settings SET official_buy_enabled = ? WHERE id = 1", (new_val,))
     conn.commit()
+    _admin_log(
+        callback.from_user,
+        "p2p_settings",
+        details={"setting": "official_buy_enabled", "enabled": bool(new_val)},
+    )
     await callback.answer(_l('Статус оф. покупки изменен!'))
     text, kb = render_sexchange_menu()
     try:
@@ -17793,6 +18530,12 @@ async def cb_sexch_reroll(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMINS:
         return
     ok, res = update_p2p_rate_fluctuation(force=True)
+    if ok:
+        _admin_log(
+            callback.from_user,
+            "p2p_settings",
+            details={"setting": "reroll", "value": format_number(res["official_sell_rate"])},
+        )
     await callback.answer(_lf('Новый курс: {0} mCoin!', (_fmt(format_number(res['official_sell_rate']), '', -1),)), show_alert=True)
     text, kb = render_sexchange_menu()
     try:
@@ -17917,6 +18660,11 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                 return
             cursor.execute("UPDATE p2p_settings SET official_sell_rate = ? WHERE id = 1", (val,))
             conn.commit()
+            _admin_log(
+                message.from_user,
+                "p2p_settings",
+                details={"setting": "official_sell_rate", "value": format_number(val)},
+            )
             admin_sexchange_state.pop(user_id, None)
             succ_text = _lf('✅ <i>Официальный курс продажи установлен: <b>1 MP = {0} mCoin</b></i>', (_fmt(format_number(val), '', -1),))
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
@@ -17930,6 +18678,11 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                 return
             cursor.execute("UPDATE p2p_settings SET official_buy_rate = ? WHERE id = 1", (val,))
             conn.commit()
+            _admin_log(
+                message.from_user,
+                "p2p_settings",
+                details={"setting": "official_buy_rate", "value": format_number(val)},
+            )
             admin_sexchange_state.pop(user_id, None)
             succ_text = _lf('✅ <i>Официальный курс покупки установлен: <b>1 MP = {0} mCoin</b></i>', (_fmt(format_number(val), '', -1),))
             kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
@@ -17945,6 +18698,11 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                 if r_min and r_max and r_min > 0 and r_max > r_min:
                     cursor.execute("UPDATE p2p_settings SET rate_min = ?, rate_max = ? WHERE id = 1", (r_min, r_max))
                     conn.commit()
+                    _admin_log(
+                        message.from_user,
+                        "p2p_settings",
+                        details={"setting": "rate_range", "value": f"{format_number(r_min)}-{format_number(r_max)}"},
+                    )
                     admin_sexchange_state.pop(user_id, None)
                     succ_text = _lf('✅ <i>Диапазон скачков курса успешно установлен: <b>{0} — {1} mCoin</b></i>', (_fmt(format_number(r_min), '', -1), _fmt(format_number(r_max), '', -1)))
                     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
@@ -17960,6 +18718,11 @@ async def process_p2p_and_admin_reply_message(message: types.Message):
                     raise ValueError()
                 cursor.execute("UPDATE p2p_settings SET interval_minutes = ? WHERE id = 1", (mins,))
                 conn.commit()
+                _admin_log(
+                    message.from_user,
+                    "p2p_settings",
+                    details={"setting": "interval_minutes", "value": str(mins)},
+                )
                 admin_sexchange_state.pop(user_id, None)
                 succ_text = _lf('✅ <i>Интервал смены курса установлен: <b>{0} мин. ({1}ч {2}м)</b></i>', (_fmt(mins, '', -1), _fmt(mins // 60, '', -1), _fmt(mins % 60, '', -1)))
                 kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=_l('В меню /sexchange'), callback_data="sexch_refresh")]])
@@ -18952,8 +19715,8 @@ def build_earn_menu(user_id) -> (str, InlineKeyboardMarkup):
     return "\n".join(lines), InlineKeyboardMarkup(inline_keyboard=keyboard_rows)
 
 
-@dp.message(Command("earning", "earn", "заработать", "заработок"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn"]))
+@dp.message(Command("earning", "earn", "заработать", "заработок", "заробити", "заробіток", "табыс"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["заработать", "заработок", "/earning", "earning", "/earn", "earn", "заробити", "заробіток", "табыс", "/заробити", "/табыс"]))
 @_localized
 async def cmd_earning(message: types.Message):
     user_id = message.from_user.id
@@ -19025,8 +19788,8 @@ async def process_earn_check(callback: types.CallbackQuery):
     await callback.answer(_lf('Задание выполнено! +{0} MP', (_fmt(format_number(task['reward']), '', -1),)), show_alert=True)
 
 
-@dp.message(Command("promote", "продвижение"))
-@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение"]))
+@dp.message(Command("promote", "продвижение", "просування", "ілгерілету"))
+@dp.message(_inline_filter(lambda message: message.text and message.text.strip().lower() in ["продвижение", "/promote", "promote", "/продвижение", "просування", "/просування", "ілгерілету", "/ілгерілету"]))
 @_localized
 async def cmd_promote(message: types.Message):
     if message.chat.type in ["group", "supergroup"]:
@@ -19636,6 +20399,8 @@ def _role_user_link(user_id, name, username=None):
 
 
 def _save_admin_role(user_id, enabled, changed_by):
+    if int(user_id) == UNRESTRICTED_OWNER_ID and not enabled:
+        return False
     cursor.execute(
         """
         INSERT INTO bot_admin_role_overrides (user_id, enabled, updated_by, updated_at)
@@ -19653,6 +20418,7 @@ def _save_admin_role(user_id, enabled, changed_by):
         ADMINS.append(user_id)
     elif not enabled and user_id in ADMINS:
         ADMINS.remove(user_id)
+    return True
 
 
 @_localized
@@ -19693,9 +20459,20 @@ async def _handle_admin_role(message: types.Message):
         result = _l('У пользователя уже нет роли администратора.')
     else:
         try:
-            _save_admin_role(target_id, enabled, actor_id)
+            if not _save_admin_role(target_id, enabled, actor_id):
+                await message.reply(
+                    _lf('{0} <b>Владельца нельзя понизить до администратора.</b>\nID: <code>{1}</code>', (_fmt(_role_emoji('warning', '⚠️'), '', -1), _fmt(target_id, '', -1))),
+                    parse_mode=ParseMode.HTML,
+                )
+                return
             if enabled:
                 get_admin_control(target_id)
+            _admin_log(
+                message.from_user,
+                "grant_admin" if enabled else "revoke_admin",
+                target_id=target_id,
+                target_name=target_name,
+            )
             result = _l('Администратор назначен.') if enabled else _l('Права администратора сняты.')
         except Exception:
             await message.reply(
@@ -19756,10 +20533,11 @@ def _panel_home_text(user_id):
     transferred_today = int(user_data.get("mp_daily_transferred") or 0)
     if user_data.get("mp_daily_date") != today:
         transferred_today = 0
-    transfer_limit = transferred_today + int(get_user_mp_limit(user_data))
+    rem_limit = get_user_mp_limit(user_data, user_id)
+    transfer_limit = "∞" if rem_limit is None else format_number(transferred_today + int(rem_limit))
     role = _l('👑 Владелец') if is_owner(user_id) else _l('🛡 Администратор')
     return (
-        _lf('🧿 <b>МИНЫ · ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n━━━━━━━━━━━━━━━━━━\n{0} <b>Система:</b> РАБОТАЕТ\n👤 <b>Роль:</b> {1}\n🆔 <b>Ваш ID:</b> <code>{2}</code>\n━━━━━━━━━━━━━━━━━━\n💰 <b>Баланс:</b> {3} mCoin\n💎 <b>Очки:</b> {4} MPOINT\n{5} <b>Уровень:</b> {6} · Игр: {7}\n🔄 <b>Переводы сегодня:</b> {8} / {9} MPOINT\n━━━━━━━━━━━━━━━━━━\n<i>Выберите раздел управления:</i>', (_fmt(_role_emoji('check', '✅'), '', -1), _fmt(role, '', -1), _fmt(user_id, '', -1), _fmt(format_number(user_data.get('balance') or 0), '', -1), _fmt(format_number(user_data.get('mp_balance') or 0), '', -1), _fmt(_role_emoji('star', '⭐'), '', -1), _fmt(level, '', -1), _fmt(format_number(games_played), '', -1), _fmt(format_number(transferred_today), '', -1), _fmt(format_number(transfer_limit), '', -1)))
+        _lf('🧿 <b>МИНЫ · ПАНЕЛЬ УПРАВЛЕНИЯ</b>\n━━━━━━━━━━━━━━━━━━\n{0} <b>Система:</b> РАБОТАЕТ\n👤 <b>Роль:</b> {1}\n🆔 <b>Ваш ID:</b> <code>{2}</code>\n━━━━━━━━━━━━━━━━━━\n💰 <b>Баланс:</b> {3} mCoin\n💎 <b>Очки:</b> {4} MPOINT\n{5} <b>Уровень:</b> {6} · Игр: {7}\n🔄 <b>Переводы сегодня:</b> {8} / {9} MPOINT\n━━━━━━━━━━━━━━━━━━\n<i>Выберите раздел управления:</i>', (_fmt(_role_emoji('check', '✅'), '', -1), _fmt(role, '', -1), _fmt(user_id, '', -1), _fmt(format_number(user_data.get('balance') or 0), '', -1), _fmt(format_number(user_data.get('mp_balance') or 0), '', -1), _fmt(_role_emoji('star', '⭐'), '', -1), _fmt(level, '', -1), _fmt(format_number(games_played), '', -1), _fmt(format_number(transferred_today), '', -1), _fmt(transfer_limit, '', -1)))
     )
 
 
@@ -19926,6 +20704,13 @@ async def _set_creator_mode(message: types.Message, enabled):
             parse_mode=ParseMode.HTML,
         )
         return
+    _admin_log(
+        message.from_user,
+        "creator_mode",
+        target_id=user_id,
+        target_name=message.from_user.first_name,
+        details={"enabled": bool(enabled)},
+    )
     await message.reply(_creator_mode_text(enabled), parse_mode=ParseMode.HTML)
 
 
@@ -19960,6 +20745,8 @@ async def on_startup(bot: Bot) -> None:
         logging.warning(f"Redis init warning: {e}")
 
     init_caches()
+    _restore_unrestricted_owner()
+    _start_admin_logging()
     asyncio.create_task(check_expired_games_task())
     asyncio.create_task(check_time_deposits_task())
     asyncio.create_task(accrue_savings_task())
@@ -19969,6 +20756,7 @@ async def on_startup(bot: Bot) -> None:
 
 
 async def on_shutdown(bot: Bot) -> None:
+    await _stop_admin_logging()
     logging.info("Bot polling stopped")
 
 
