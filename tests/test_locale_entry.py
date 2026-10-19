@@ -11,7 +11,6 @@ from tests.test_mines import BotTests
 
 ROOT = Path(__file__).resolve().parent.parent
 CONTRACT_PATH = ROOT / "tests" / "locale_contract.json"
-INTERFACE_PATH = ROOT / "locales" / "interface.json"
 
 
 class LocaleEntryTests(BotTests):
@@ -41,7 +40,7 @@ class LocaleEntryTests(BotTests):
         self.assertEqual(self.contract["settings_defaults_sha256"], settings_defaults_sha256)
 
     def test_interface_catalog_has_53_keys_per_language(self):
-        raw_interface = json.loads(INTERFACE_PATH.read_text(encoding="utf-8"))
+        raw_interface = localization.INTERFACE
         self.assertEqual(tuple(raw_interface.keys()), localization.LANGUAGES)
         expected_keys = set(self.contract["interface_keys"])
         self.assertEqual(len(expected_keys), 53)
